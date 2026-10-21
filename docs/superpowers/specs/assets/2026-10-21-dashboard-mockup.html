@@ -1,0 +1,173 @@
+<h2>Game dashboard: which review interaction?</h2>
+<p class="subtitle">Both share the same page shell (header, event list, player, timeline). They differ in how a human accepts or rejects a draft. Click one to select, then tell me in the terminal what's wrong.</p>
+
+<style>
+  .wf { font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: #222; background: #fafaf7; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+  .wf * { box-sizing: border-box; }
+  .wf .hdr { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #ddd; background: #f1f1ec; }
+  .wf .hdr .sp { flex: 1; }
+  .wf .pill { border: 1px solid #999; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+  .wf .pill.on { background: #222; color: #fff; border-color: #222; }
+  .wf .badge { background: #c0392b; color: #fff; border-radius: 999px; padding: 1px 7px; font-size: 10px; }
+  .wf .body { display: flex; min-height: 420px; }
+  .wf .list { width: 42%; border-right: 1px solid #ddd; overflow: hidden; }
+  .wf .row { display: flex; gap: 8px; padding: 7px 10px; border-bottom: 1px solid #e6e6e0; }
+  .wf .row.sel { background: #fff; outline: 2px solid #222; outline-offset: -2px; }
+  .wf .thumb { width: 64px; height: 38px; background: #d6d6ce; border-radius: 3px; flex: none; }
+  .wf .meta { flex: 1; min-width: 0; }
+  .wf .meta .l1 { color: #666; font-size: 10px; }
+  .wf .meta .l2 { font-weight: 600; }
+  .wf .conf { height: 5px; background: #e2e2da; border-radius: 3px; margin-top: 4px; position: relative; }
+  .wf .conf i { position: absolute; left: 0; top: 0; bottom: 0; background: #2e7d32; border-radius: 3px; }
+  .wf .conf i.mid { background: #e0a000; }
+  .wf .tag { font-size: 10px; border-radius: 3px; padding: 0 5px; color: #fff; background: #2e7d32; }
+  .wf .tag.pen { background: #b23; }
+  .wf .tag.sog { background: #456; }
+  .wf .tag.gk { background: #67a; }
+  .wf .tag.draft { background: #e0a000; color: #222; }
+  .wf .tag.time { background: #fff; color: #b23; border: 1px solid #b23; }
+  .wf .main { flex: 1; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .wf .player { background: #2b2b2b; color: #bbb; height: 170px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+  .wf .strip { display: flex; gap: 1px; height: 14px; }
+  .wf .strip b { flex: 1; background: #d9d9d0; }
+  .wf .strip b.live { background: #b8c9b4; }
+  .wf .strip b.dead { background: #e8e8e0; }
+  .wf .strip b.goal { background: #2e7d32; }
+  .wf .strip b.pen { background: #b23; }
+  .wf .strip b.cur { outline: 2px solid #222; }
+  .wf .legend { color: #666; font-size: 10px; display: flex; gap: 10px; }
+  .wf .sw { display: inline-block; width: 9px; height: 9px; vertical-align: middle; margin-right: 3px; }
+  .wf .detail { border: 1px solid #ddd; border-radius: 4px; padding: 8px 10px; background: #fff; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px 14px; }
+  .wf .detail .k { color: #777; font-size: 10px; text-transform: uppercase; }
+  .wf .detail .v { font-weight: 600; }
+  .wf .actions { display: flex; gap: 8px; align-items: center; }
+  .wf .btn { border: 1px solid #222; border-radius: 4px; padding: 4px 10px; background: #fff; }
+  .wf .btn.pri { background: #222; color: #fff; }
+  .wf .btn.danger { border-color: #b23; color: #b23; }
+  .wf .keys { color: #777; font-size: 10px; margin-left: auto; }
+  .wf .queue { flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .wf .counter { color: #666; font-size: 11px; }
+  .wf .modal-wrap { position: relative; }
+  .wf .modal { position: absolute; left: 50%; top: 40px; transform: translateX(-50%); width: 360px; background: #fff; border: 1px solid #222; border-radius: 6px; padding: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  .wf .modal h4 { margin: 0 0 8px; font-size: 12px; }
+  .wf .field { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+  .wf .field label { color: #777; font-size: 10px; text-transform: uppercase; }
+  .wf .sel-box { border: 1px solid #999; border-radius: 3px; padding: 3px 6px; background: #fff; }
+  .wf .seg { display: flex; gap: 4px; }
+  .wf .seg span { border: 1px solid #999; border-radius: 3px; padding: 2px 7px; }
+  .wf .seg span.on { background: #222; color: #fff; border-color: #222; }
+  .dim { opacity: .35; }
+</style>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Inline review (recommended)</h3>
+      <p>One page. Select any event in the list, accept or reject in the detail panel. Keyboard: <b>j</b>/<b>k</b> next/previous draft, <b>a</b> accept, <b>r</b> reject, <b>t</b> enter time. The list filter "Drafts only" turns it into a queue without a separate screen. Same page serves auto mode: no buttons, just the log.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Focused review queue</h3>
+      <p>A separate route. One draft at a time, large video, two buttons, a counter. Faster for a scorekeeper grinding through a game, but it is a second screen to build and the dashboard has to stay in sync with it.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">A: Inline review, review mode, draft selected</div>
+    <div class="mockup-body">
+      <div class="wf">
+        <div class="hdr">
+          <b>strix</b>
+          <span>Windigo @ Jr. Blues · Apr 11</span>
+          <span class="pill">Auto</span><span class="pill on">Review</span>
+          <span class="sp"></span>
+          <span>Drafts <span class="badge">7</span></span>
+          <span>Needs time <span class="badge">3</span></span>
+          <span class="pill">Processing 212/296 clips</span>
+          <span class="pill">$0.17</span>
+        </div>
+        <div class="body">
+          <div class="list">
+            <div class="row"><div class="thumb"></div><div class="meta"><div class="l1">P1 · 04:12 into period · Jr. Blues</div><div class="l2">Goal <span class="tag">accepted</span></div><div class="conf"><i style="width:91%"></i></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="meta"><div class="l1">P1 · 09:40 · Windigo</div><div class="l2">Penalty · cross-checking · minor 2 <span class="tag draft">draft 84</span></div><div class="conf"><i style="width:84%"></i></div></div></div>
+            <div class="row sel"><div class="thumb"></div><div class="meta"><div class="l1">P? · 1:02:15 video · Windigo</div><div class="l2">Goal <span class="tag draft">draft 71</span> <span class="tag time">needs time</span></div><div class="conf"><i class="mid" style="width:71%"></i></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="meta"><div class="l1">P2 · 02:56 · Windigo</div><div class="l2">Penalty · slashing · minor 2 <span class="tag draft">draft 66</span></div><div class="conf"><i class="mid" style="width:66%"></i></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="meta"><div class="l1">P2 · 03:04 · Jr. Blues</div><div class="l2">Goalie change <span class="tag gk">auto</span></div><div class="conf"><i style="width:88%"></i></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="meta"><div class="l1">P2 · 08:28 · Jr. Blues</div><div class="l2">Penalty · checking from behind <span class="tag draft">draft 58</span></div><div class="conf"><i class="mid" style="width:58%"></i></div></div></div>
+            <div class="row dim"><div class="thumb"></div><div class="meta"><div class="l1">P2 · 14:10 · Jr. Blues</div><div class="l2">Goal <span class="tag pen">rejected</span> → manual: shot on goal</div><div class="conf"><i class="mid" style="width:44%"></i></div></div></div>
+          </div>
+          <div class="main">
+            <div class="player">▶ clip 124 · 1:02:00–1:02:30 · original (overlay visible to humans, cropped for the model)</div>
+            <div class="strip">
+              <b class="dead"></b><b class="dead"></b><b class="live"></b><b class="live"></b><b class="live"></b><b class="goal"></b><b class="live"></b><b class="live"></b><b class="pen"></b><b class="live"></b><b class="live"></b><b class="live"></b><b class="dead"></b><b class="dead"></b><b class="dead"></b><b class="live"></b><b class="live"></b><b class="pen"></b><b class="live"></b><b class="pen"></b><b class="live"></b><b class="live"></b><b class="goal cur"></b><b class="live"></b><b class="live"></b><b class="dead"></b><b class="dead"></b><b class="live"></b><b class="live"></b><b class="live"></b><b class="pen"></b><b class="live"></b><b class="live"></b><b class="live"></b><b class="live"></b><b class="dead"></b><b></b><b></b><b></b>
+            </div>
+            <div class="legend"><span><i class="sw" style="background:#b8c9b4"></i>live play</span><span><i class="sw" style="background:#e8e8e0"></i>intermission / dead</span><span><i class="sw" style="background:#2e7d32"></i>goal</span><span><i class="sw" style="background:#b23"></i>penalty</span><span><i class="sw" style="background:#d9d9d0"></i>not yet classified</span><span>← → step clips · click to seek</span></div>
+            <div class="detail">
+              <div><div class="k">Event</div><div class="v">Goal · Windigo</div></div>
+              <div><div class="k">Confidence</div><div class="v">71 / 100</div></div>
+              <div><div class="k">Placed</div><div class="v">1:02:15 ± 10 s (pass 2)</div></div>
+              <div><div class="k">Period</div><div class="v">unsure (gap before is 4 min, ambiguous)</div></div>
+              <div><div class="k">Clock</div><div class="v">— needs scorekeeper</div></div>
+              <div><div class="k">Scorer / assists</div><div class="v">— (roster later)</div></div>
+            </div>
+            <div class="actions">
+              <span class="btn pri">Accept (a)</span><span class="btn danger">Reject (r)</span><span class="btn">Set period + clock (t)</span>
+              <span class="keys">j / k next / prev draft</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Reject → manual pick modal (same in A and B). The model's draft is kept as a labeled example; it never re-guesses.</div>
+    <div class="mockup-body">
+      <div class="wf modal-wrap" style="min-height: 300px; background:#eee">
+        <div class="modal">
+          <h4>Rejected: Goal · Windigo (71). What actually happened?</h4>
+          <div class="field"><label>Event</label><div class="seg"><span>Goal</span><span class="on">Penalty</span><span>Shot on goal</span><span>Goalie change</span><span>Nothing</span></div></div>
+          <div class="field"><label>Team</label><div class="seg"><span class="on">Windigo</span><span>Jr. Blues</span></div></div>
+          <div class="field"><label>Infraction</label><div class="sel-box">Holding ▾</div></div>
+          <div class="field"><label>Class</label><div class="seg"><span class="on">Minor 2</span><span>Double 4</span><span>Major 5</span><span>Misc 10</span></div></div>
+          <div class="field"><label>Player #</label><div class="sel-box">28</div></div>
+          <div class="field"><label>Period · clock</label><div style="display:flex;gap:6px"><div class="sel-box">3rd ▾</div><div class="sel-box">09:04</div></div></div>
+          <div class="actions"><span class="btn pri">Save manual event</span><span class="btn">Cancel</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">B: Focused review queue, separate route</div>
+    <div class="mockup-body">
+      <div class="wf">
+        <div class="hdr"><b>strix</b><span>Windigo @ Jr. Blues</span><span class="sp"></span><span class="counter">Draft 3 of 7 · 3 need time</span><span class="pill">Back to dashboard</span></div>
+        <div class="queue">
+          <div class="player" style="height:220px">▶ clip 124 · 1:02:00–1:02:30</div>
+          <div class="detail" style="grid-template-columns:1fr 1fr 1fr 1fr">
+            <div><div class="k">Event</div><div class="v">Goal · Windigo</div></div>
+            <div><div class="k">Confidence</div><div class="v">71 / 100</div></div>
+            <div><div class="k">Period</div><div class="v">unsure</div></div>
+            <div><div class="k">Clock</div><div class="v">—</div></div>
+          </div>
+          <div class="actions"><span class="btn pri">Accept</span><span class="btn danger">Reject</span><span class="btn">Set time</span><span class="btn">Skip</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Also on this page, not pictured</h3>
+  <p>Games list (upload drop zone, per-game status, mode toggle, thresholds). Upload page shows one frame with a draggable crop box over the scoreboard. Box score tab per game: scoring and shots by period, penalties by period, computed from accepted and auto events, laid out like gamesheetstats. Export JSONL button.</p>
+</div>
