@@ -42,7 +42,7 @@ const mediaTypeOf = (request: Request): string =>
 const isJsonOrRead = (request: Request): boolean =>
   request.method === "GET" || request.method === "HEAD" || mediaTypeOf(request) === "application/json"
 
-const forGame = (request: Request, email: string): Request => {
+export const forGame = (request: Request, email: string): Request => {
   const headers = new Headers([...request.headers].filter(([name]) => !name.startsWith(INTERNAL_HEADER_PREFIX)))
   headers.set("x-strix-email", email)
   return new Request(request, { headers })
@@ -70,8 +70,8 @@ const createGame = async (request: Request, env: Env): Promise<Response> => {
   const decoded = decodeNewGame(await request.text())
   if (Result.isFailure(decoded)) return errorResponse(invalidInputFrom(decoded.failure.issue))
   const game = gameFrom(decoded.success)
-  await insertGame(env.DB, game)
   await env.GAME.getByName(game.id).create(game)
+  await insertGame(env.DB, game)
   return Response.json(encodeGame(game), { headers: NO_STORE })
 }
 

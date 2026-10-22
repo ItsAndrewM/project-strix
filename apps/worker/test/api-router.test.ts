@@ -2,7 +2,8 @@ import { DEFAULT_THRESHOLDS, type NewGame, TIMING_PRESETS } from "@strix/contrac
 import { env, SELF } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Caller } from "../src/access.ts"
-import { routeApi } from "../src/api-router.ts"
+import { forGame, routeApi } from "../src/api-router.ts"
+import { listGames } from "../src/games-index/games-index.ts"
 import { applySchema, clearGames } from "./games.ts"
 
 const ORIGIN = "https://strix.example.test"
@@ -84,6 +85,43 @@ describe("POST /api/games", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined)
     const request = new Request(`${ORIGIN}/api/games`, { method: "POST", body: JSON.stringify(NEW_GAME) })
     expect((await routeApi(request, andrew, env)).status).toBe(415)
+  })
+})
+
+describe("creating a game whose Durable Object can't be created", () => {
+  it("answers 503 and leaves no game in the index", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    vi.spyOn(env.GAME, "getByName").mockImplementation(() => {
+      throw new Error("storage unavailable")
+    })
+    const response = await routeApi(post(JSON.stringify(NEW_GAME)), andrew, env)
+    expect(response.status).toBe(503)
+    expect(await listGames(env.DB)).toEqual([])
+    expect(consoleError).toHaveBeenCalledExactlyOnceWith({
+      event: "index-unavailable",
+      route: "POST /api/games",
+      cause: "storage unavailable",
+    })
+  })
+})
+
+describe("a request forwarded to a game", () => {
+  const forwarded = (headers: HeadersInit) =>
+    forGame(new Request(`${ORIGIN}/api/games/g1/clips`, { headers }), andrew.email)
+
+  it.each(["X-Strix-Email", "x-strix-email", "X-STRIX-EMAIL"])(
+    "carries the caller's email in place of a client-sent %s",
+    (name) => {
+      expect(forwarded({ [name]: "attacker@x.test" }).headers.get("x-strix-email")).toBe(andrew.email)
+    },
+  )
+
+  it("drops every other x-strix- header the client sent and keeps the rest", () => {
+    const request = forwarded({ "X-Strix-Role": "admin", "x-strix-game": "g2", accept: "application/json" })
+    expect([...request.headers]).toEqual([
+      ["accept", "application/json"],
+      ["x-strix-email", andrew.email],
+    ])
   })
 })
 
