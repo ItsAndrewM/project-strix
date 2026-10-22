@@ -23,6 +23,7 @@ export const CELL_TONES = {
   warmup: "bg-sky-200 dark:bg-sky-800/70",
   empty: "bg-stone-100 dark:bg-stone-800",
   pending: "bg-muted bg-[repeating-linear-gradient(135deg,transparent_0_4px,var(--border)_4px_8px)]",
+  failed: "bg-destructive/25 bg-[repeating-linear-gradient(45deg,transparent_0_3px,var(--destructive)_3px_4px)]",
 } satisfies Record<CellState, string>
 
 export const CELL_LABELS = {
@@ -32,6 +33,7 @@ export const CELL_LABELS = {
   warmup: "warmup",
   empty: "empty",
   pending: "not yet classified",
+  failed: "could not be sliced or read",
 } satisfies Record<CellState, string>
 
 export const MARK_TONES = {

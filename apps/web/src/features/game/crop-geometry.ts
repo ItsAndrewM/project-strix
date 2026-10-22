@@ -44,8 +44,8 @@ export const resizeRect = (rect: Rect, { dx, dy }: Delta, bounds: Size): Rect =>
 })
 
 const span = (start: number, length: number, scale: number, limit: number) => {
-  const from = clamp(Math.round(start * scale), 0, limit)
-  const to = clamp(Math.round((start + length) * scale), 0, limit)
+  const from = clamp(Math.round(start * scale), 0, limit - 1)
+  const to = clamp(Math.round((start + length) * scale), from + 1, limit)
   return { from, length: to - from }
 }
 

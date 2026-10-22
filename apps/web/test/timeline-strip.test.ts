@@ -1,3 +1,4 @@
+import type { Clip } from "@strix/contracts"
 import { describe, expect, it } from "vitest"
 import { cellsFor } from "../src/features/game/timeline-cells.ts"
 import { clip, event } from "./fixtures.ts"
@@ -22,6 +23,11 @@ describe("cellsFor", () => {
   it("marks a goal and a penalty in the same clip once each", () => {
     const events = [event("p", "penalty", 1, "draft"), event("g1", "goal", 1, "auto"), event("g2", "goal", 1, "draft")]
     expect(cellsFor(CLIPS, events, null)[1]?.marks).toEqual(["goal", "penalty"])
+  })
+
+  it("shows a clip that could not be sliced or classified as failed, apart from pending", () => {
+    const unsliced: Clip = { ...clip(1, null), renditions: [], classification: "failed" }
+    expect(cellsFor([clip(0, null), unsliced], [], null).map(({ state }) => state)).toEqual(["pending", "failed"])
   })
 
   it("shows a clip that isn't classified yet as pending", () => {

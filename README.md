@@ -23,7 +23,8 @@ pnpm dev
 
 `pnpm dev` runs `pnpm dev:prepare` first, which applies the D1 migrations to the local database the dev server uses.
 The dev server runs the `local` environment: fixture videos instead of real slicing and classification, and every
-request signed in as `andrew@example.test`.
+request signed in as `andrew@example.test`. It needs no Cloudflare login: the `local` environment never calls Workers
+AI or Media Transformations, so `pnpm dev` turns remote bindings off (`CLOUDFLARE_VITE_FORCE_LOCAL=true`).
 
 ## Check
 

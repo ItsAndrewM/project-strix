@@ -11,14 +11,16 @@ interface ClipPlayerProps {
   readonly ref: Ref<HTMLVideoElement>
 }
 
+const Placeholder = ({ children }: { readonly children: string }) => (
+  <div className="flex aspect-video w-full items-center justify-center rounded-lg bg-neutral-900 text-sm text-neutral-400">
+    {children}
+  </div>
+)
+
 export const ClipPlayer = ({ gameId, clip, startAtMs, autoPlay, ref }: ClipPlayerProps) => {
-  if (clip === null) {
-    return (
-      <div className="flex aspect-video w-full items-center justify-center rounded-lg bg-neutral-900 text-sm text-neutral-400">
-        No clips yet
-      </div>
-    )
-  }
+  if (clip === null) return <Placeholder>No clips yet</Placeholder>
+  if (!clip.renditions.includes("view"))
+    return <Placeholder>{`Clip ${clip.index + 1} could not be sliced`}</Placeholder>
   const seek = ({ currentTarget }: SyntheticEvent<HTMLVideoElement>) => {
     currentTarget.currentTime = startAtMs / 1_000
   }

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "CLOUDFLARE_ENV=local vite",
+    "dev": "CLOUDFLARE_ENV=local CLOUDFLARE_VITE_FORCE_LOCAL=true vite",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json"

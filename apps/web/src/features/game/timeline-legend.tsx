@@ -2,7 +2,7 @@ import { cn } from "cn"
 import type { CellState, Mark } from "./timeline-cells.ts"
 import { CELL_LABELS, CELL_TONES, MARK_TONES } from "./tones.ts"
 
-const STATES: ReadonlyArray<CellState> = ["live", "stoppage", "intermission", "warmup", "empty", "pending"]
+const STATES: ReadonlyArray<CellState> = ["live", "stoppage", "intermission", "warmup", "empty", "pending", "failed"]
 const MARKS: ReadonlyArray<Mark> = ["goal", "penalty"]
 
 const Swatch = ({ tone, label }: { readonly tone: string; readonly label: string }) => (

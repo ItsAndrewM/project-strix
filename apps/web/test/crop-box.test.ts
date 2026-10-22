@@ -5,6 +5,15 @@ const RENDERED = { width: 640, height: 360 }
 const NATURAL = { width: 1920, height: 1080 }
 
 describe("toSource", () => {
+  it("never gives a side of less than one source pixel, even at the frame's far edge", () => {
+    expect(toSource({ x: 640, y: 360, width: 0.1, height: 0.1 }, RENDERED, { width: 320, height: 180 })).toEqual({
+      x: 319,
+      y: 179,
+      width: 1,
+      height: 1,
+    })
+  })
+
   it("scales a displayed rectangle up to source pixels", () => {
     expect(toSource({ x: 32, y: 18, width: 256, height: 43.2 }, RENDERED, NATURAL)).toEqual({
       x: 96,

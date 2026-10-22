@@ -1,6 +1,6 @@
 import type { Clip, GameEvent, GameState } from "@strix/contracts"
 
-export type CellState = GameState | "pending"
+export type CellState = GameState | "pending" | "failed"
 
 export type Mark = "goal" | "penalty"
 
@@ -25,7 +25,7 @@ export const cellsFor = (
 ): ReadonlyArray<TimelineCell> =>
   clips.map((clip) => ({
     index: clip.index,
-    state: clip.state ?? "pending",
+    state: clip.state ?? (clip.classification === "failed" ? "failed" : "pending"),
     marks: marksIn(events, clip.index),
     selected: clip.index === selectedIndex,
   }))
