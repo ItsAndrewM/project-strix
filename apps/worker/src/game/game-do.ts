@@ -11,6 +11,7 @@ import { migrate } from "./db/migrate.ts"
 import { MIGRATIONS } from "./db/migrations.ts"
 import { type GameApi, gameApi } from "./http.ts"
 import { checkProbe, type IngestDeps, probeKey, setSource, start } from "./ingest.ts"
+import { serveThumb, serveView } from "./media.ts"
 import { type Publish, publisherFor } from "./publish.ts"
 import { checkRanges } from "./ranges.ts"
 import { acceptSocket, answerClose, type Broadcast, broadcastTo, heartbeat } from "./sockets.ts"
@@ -44,6 +45,14 @@ const readingOf = (response: ClefResponse): PassOneReading | ReadingError => {
 
 const PROBE_CACHE = "private, max-age=3600"
 
+const CLIP_MEDIA = /^\/api\/games\/([^/]+)\/clips\/(\d+)\/(view\.mp4|thumb\.jpg)$/
+
+const refusalWithoutEmail = (request: Request): Response | undefined => {
+  if (request.headers.get("x-strix-email") !== null) return undefined
+  logRefusal(routeOf(request.method, request.url), "no-forwarded-email")
+  return errorResponse(new Unauthorized())
+}
+
 export class GameDO extends DurableObject<Env> {
   protected readonly broadcast: Broadcast
   private readonly publish: Publish
@@ -65,9 +74,8 @@ export class GameDO extends DurableObject<Env> {
     const game = readGame(this.ctx.storage.sql)
     const { pathname } = new URL(request.url)
     if (game !== undefined && pathname === socketPath(game.id)) return acceptSocket(this.ctx, request)
-    if (game !== undefined && pathname === probePath(game.id) && request.method === "GET") {
-      return this.probeFrame(request, game.id)
-    }
+    const media = game === undefined ? undefined : this.mediaRoute(request, game.id, pathname)
+    if (media !== undefined) return media
     const response = await this.api.handler(request)
     if (response.status === 500) logDefect({ route: routeOf(request.method, request.url), gameId: game?.id ?? null })
     response.headers.set("cache-control", "no-store")
@@ -157,11 +165,26 @@ export class GameDO extends DurableObject<Env> {
     }
   }
 
-  private async probeFrame(request: Request, gameId: string): Promise<Response> {
-    if (request.headers.get("x-strix-email") === null) {
-      logRefusal(routeOf(request.method, request.url), "no-forwarded-email")
-      return errorResponse(new Unauthorized())
+  private mediaRoute(request: Request, gameId: string, pathname: string): Promise<Response> | undefined {
+    if (request.method !== "GET") return undefined
+    if (pathname === probePath(gameId)) return this.probeFrame(request, gameId)
+    const match = CLIP_MEDIA.exec(pathname)
+    return match?.[1] === gameId ? this.clipMedia(request, gameId, match) : undefined
+  }
+
+  private async clipMedia(request: Request, gameId: string, match: RegExpExecArray): Promise<Response> {
+    const refusal = refusalWithoutEmail(request)
+    if (refusal !== undefined) return refusal
+    const index = Number(match[2])
+    if (!Number.isSafeInteger(index) || readClip(this.ctx.storage.sql, index) === undefined) {
+      return errorResponse(new NotFound())
     }
+    return match[3] === "view.mp4" ? serveView(this.env, gameId, index, request) : serveThumb(this.env, gameId, index)
+  }
+
+  private async probeFrame(request: Request, gameId: string): Promise<Response> {
+    const refusal = refusalWithoutEmail(request)
+    if (refusal !== undefined) return refusal
     const frame = await this.env.BUCKET.get(probeKey(gameId))
     if (frame === null) return errorResponse(new NotFound())
     return new Response(frame.body, { headers: { "content-type": "image/jpeg", "cache-control": PROBE_CACHE } })

@@ -53,7 +53,7 @@ const existingGame = (sql: SqlStorage): Game => {
   return game
 }
 
-const bytesOf = (base64: string): Uint8Array => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+export const bytesOf = (base64: string): Uint8Array => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
 
 const isCurrent = (storage: DurableObjectStorage, attempt: ProbeAttempt): boolean =>
   readGame(storage.sql)?.status === "probing" && storage.kv.get<ProbeAttempt>(PROBE_KEY)?.id === attempt.id
