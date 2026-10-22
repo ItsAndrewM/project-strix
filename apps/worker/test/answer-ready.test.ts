@@ -1,14 +1,24 @@
 import type { Clip, Game, GameEvent } from "@strix/contracts"
+import { STEP_MS, WINDOW_MS } from "@strix/domain"
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
-import { readAnswers, readClips, readEvents, readGame, saveClip, saveEvents, saveGame } from "../src/game/store.ts"
+import {
+  mergedEventsOf,
+  readAnswers,
+  readClips,
+  readEvents,
+  readGame,
+  saveClip,
+  saveEvents,
+  saveGame,
+} from "../src/game/store.ts"
 import { GOAL, QUIET, withoutAnswer } from "./answers.ts"
 import { applySchema, gameAt } from "./games.ts"
 
 const clipAt = (index: number): Clip => ({
   index,
-  startMs: index * 10_000,
-  durationMs: 30_000,
+  startMs: index * STEP_MS,
+  durationMs: WINDOW_MS,
   renditions: ["model-480", "model-720", "view"],
   state: null,
   stateConfidence: null,
@@ -31,27 +41,39 @@ const stored = (id: string) =>
     return {
       game,
       clips: readClips(state.storage.sql),
-      events: readEvents(state.storage.sql),
+      rows: readEvents(state.storage.sql),
+      events: mergedEventsOf(state.storage.sql),
       answers: readAnswers(state.storage.sql, 0),
     }
   })
 
-const accepted = (clipIndex: number): GameEvent => ({
-  id: "accepted-goal",
-  type: "goal",
+const kept = (id: string, status: "accepted" | "manual", clipIndex: number): GameEvent => ({
+  id,
+  type: "penalty",
   team: "away",
   teamConfidence: 80,
-  videoMs: clipIndex * 10_000,
+  videoMs: clipIndex * STEP_MS,
   precisionMs: 30_000,
   clipIndex,
   confidence: 95,
-  status: "accepted",
+  status,
   needs: [],
   period: null,
   clock: null,
-  attrs: { scorer: null, scorerConfidence: null, assists: [] },
+  attrs: { infraction: "tripping", infractionConfidence: 90, class: "minor", classConfidence: 90, player: null },
   createdAt: Date.UTC(2026, 9, 21),
 })
+
+const answeredInOrder = async (order: ReadonlyArray<number>): Promise<string> => {
+  const id = await classifying(order.length)
+  for (const index of order) await env.GAME.getByName(id).answerReady(index, 1, 0, GOAL)
+  return id
+}
+
+const goalsOf = (events: ReadonlyArray<GameEvent>) =>
+  events
+    .filter((event) => event.type === "goal")
+    .map(({ clipIndex, videoMs, status }) => ({ clipIndex, videoMs, status }))
 
 beforeAll(async () => {
   await applySchema(env.DB)
@@ -62,22 +84,48 @@ afterEach(() => {
 })
 
 describe("GameDO.answerReady", () => {
-  it("merges the goal two adjacent clips both saw into one event", async () => {
-    const id = await classifying(2)
-    const game = env.GAME.getByName(id)
-    await game.answerReady(0, 1, 0, GOAL)
-    await game.answerReady(1, 1, 0, GOAL)
+  it("shows the goal two adjacent windows both saw as one event", async () => {
+    const { clips, rows, events, game } = await stored(await answeredInOrder([0, 1]))
 
-    const { clips, events, game: after } = await stored(id)
     expect(clips.map(({ classification, state, stateConfidence }) => [classification, state, stateConfidence])).toEqual(
       [
         ["done", "live", 90],
         ["done", "live", 90],
       ],
     )
+    expect(rows).toHaveLength(2)
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({ type: "goal", team: "away", status: "auto", clipIndex: 0, videoMs: 0 })
-    expect(after).toMatchObject({ status: "ready", counts: { clips: 2, classified: 2, events: 1 } })
+    expect(game).toMatchObject({ status: "ready", counts: { clips: 2, classified: 2, events: 1 } })
+  })
+
+  it.each([[[0, 1, 2]], [[0, 2, 1]], [[2, 1, 0]]])(
+    "shows one goal for three consecutive windows answered in the order %j",
+    async (order) => {
+      const { rows, events, game } = await stored(await answeredInOrder(order))
+
+      expect(rows).toHaveLength(3)
+      expect(goalsOf(events)).toEqual([{ clipIndex: 0, videoMs: 0, status: "auto" }])
+      expect(game.counts.events).toBe(1)
+    },
+  )
+
+  it("keeps one goal when a clip's answer is delivered twice, leaving kept events untouched", async () => {
+    const id = await classifying(2)
+    const accepted = kept("accepted-penalty", "accepted", 1)
+    const manual = kept("manual-penalty", "manual", 0)
+    await runInDurableObject(env.GAME.getByName(id), (_instance, state) => {
+      saveEvents(state.storage.sql, [accepted, manual])
+    })
+    const game = env.GAME.getByName(id)
+    await game.answerReady(0, 1, 0, GOAL)
+    await game.answerReady(1, 1, 0, GOAL)
+    await game.answerReady(0, 1, 0, GOAL)
+
+    const { rows, events } = await stored(id)
+    expect(goalsOf(events)).toEqual([{ clipIndex: 0, videoMs: 0, status: "auto" }])
+    expect(rows.filter((event) => event.type === "goal")).toHaveLength(2)
+    expect(events.filter((event) => event.type === "penalty")).toEqual([manual, accepted])
   })
 
   it("fails the clip of a malformed answer, deriving no events", async () => {
@@ -85,9 +133,9 @@ describe("GameDO.answerReady", () => {
     const id = await classifying(1)
     await env.GAME.getByName(id).answerReady(0, 1, 0, withoutAnswer(GOAL, "goal"))
 
-    const { clips, events, answers, game } = await stored(id)
+    const { clips, rows, answers, game } = await stored(id)
     expect(clips.map((clip) => clip.classification)).toEqual(["failed"])
-    expect(events).toEqual([])
+    expect(rows).toEqual([])
     expect(answers).toHaveLength(1)
     expect(consoleError).toHaveBeenCalledExactlyOnceWith({
       event: "classification-failed",
@@ -96,23 +144,6 @@ describe("GameDO.answerReady", () => {
       reason: expect.stringContaining("goal"),
     })
     expect(game).toMatchObject({ status: "ready", counts: { classified: 0, events: 0 } })
-  })
-
-  it("never merges away or rewrites an event a person accepted", async () => {
-    const id = await classifying(2)
-    await runInDurableObject(env.GAME.getByName(id), (_instance, state) => {
-      saveEvents(state.storage.sql, [accepted(1)])
-    })
-    await env.GAME.getByName(id).answerReady(0, 1, 0, GOAL)
-
-    const { events } = await stored(id)
-    expect(
-      events.map(({ id: eventId, status, clipIndex }) => [eventId === "accepted-goal", status, clipIndex]),
-    ).toEqual([
-      [false, "auto", 0],
-      [true, "accepted", 1],
-    ])
-    expect(events.find((event) => event.status === "accepted")).toEqual(accepted(1))
   })
 
   it("keeps the game classifying while a clip is still pending", async () => {

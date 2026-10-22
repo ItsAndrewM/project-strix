@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import {
   countsOf,
   markClassification,
+  mergedEventsOf,
   readAnswers,
   readClip,
   readClips,
@@ -187,6 +188,30 @@ describe("the game store", () => {
       return countsOf(sql)
     })
     expect(counts).toEqual({ clips: 3, classified: 1, events: 2, drafts: 1, needs: 1 })
+  })
+
+  it("views the machine's sightings of one goal in adjacent clips as one event, keeping each row stored", async () => {
+    const first = eventOf("first", 0, "auto", [])
+    const second = { ...eventOf("second", 1, "auto", []), confidence: 90 }
+    const { view, rows, counts } = await inGame("store-view-merge", (sql) => {
+      saveEvents(sql, [first, second])
+      return { view: mergedEventsOf(sql), rows: readEvents(sql), counts: countsOf(sql) }
+    })
+    expect(view).toEqual([{ ...second, clipIndex: 0, videoMs: first.videoMs }])
+    expect(rows).toEqual([first, second])
+    expect(counts).toMatchObject({ events: 1, needs: 0 })
+  })
+
+  it("never merges a kept event into the machine's, and orders the view by video time then id", async () => {
+    const machine = eventOf("b-machine", 0, "draft", ["time"])
+    const accepted = eventOf("a-accepted", 1, "accepted", [])
+    const manual = { ...eventOf("c-manual", 0, "manual", []), videoMs: machine.videoMs }
+    const { view, counts } = await inGame("store-view-kept", (sql) => {
+      saveEvents(sql, [accepted, machine, manual])
+      return { view: mergedEventsOf(sql), counts: countsOf(sql) }
+    })
+    expect(view).toEqual([machine, manual, accepted])
+    expect(counts).toMatchObject({ events: 3, drafts: 1, needs: 1 })
   })
 
   it("leaves discarded and rejected events out of the counts", async () => {

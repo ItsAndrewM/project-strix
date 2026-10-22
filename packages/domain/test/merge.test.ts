@@ -8,6 +8,7 @@ interface Event {
   readonly clipIndex: number
   readonly videoMs: number
   readonly confidence: number
+  readonly precisionMs: number
 }
 
 const event = (overrides: Partial<Event>): Event => ({
@@ -17,6 +18,7 @@ const event = (overrides: Partial<Event>): Event => ({
   clipIndex: 3,
   videoMs: 90_000,
   confidence: 71,
+  precisionMs: 10_000,
   ...overrides,
 })
 
@@ -47,6 +49,35 @@ describe("mergeAdjacent", () => {
 
   it("does not merge beyond the merge window", () => {
     expect(mergeAdjacent([event({}), event({ clipIndex: 4, videoMs: 105_001 })])).toHaveLength(2)
+  })
+
+  it("widens the window to the events' precision when that is coarser", () => {
+    const coarse = { precisionMs: 30_000 }
+    expect(mergeAdjacent([event(coarse), event({ ...coarse, clipIndex: 4, videoMs: 115_000 })])).toHaveLength(1)
+    expect(mergeAdjacent([event(coarse), event({ ...coarse, clipIndex: 4, videoMs: 120_000 })])).toHaveLength(1)
+    expect(mergeAdjacent([event(coarse), event({ ...coarse, clipIndex: 4, videoMs: 120_001 })])).toHaveLength(2)
+  })
+
+  it("keeps the merge window for events finer than it", () => {
+    expect(mergeAdjacent([event({}), event({ clipIndex: 4, videoMs: 115_000 })])).toHaveLength(2)
+  })
+
+  it("takes the finer precision of the two events", () => {
+    const merged = mergeAdjacent([
+      event({ precisionMs: 30_000 }),
+      event({ clipIndex: 4, videoMs: 115_000, precisionMs: 10_000 }),
+    ])
+    expect(merged).toHaveLength(2)
+    expect(
+      mergeAdjacent([event({ precisionMs: 10_000 }), event({ clipIndex: 4, videoMs: 115_000, precisionMs: 30_000 })]),
+    ).toHaveLength(2)
+  })
+
+  it("merges pass-one events of a chain of 25 s windows at 30 s precision", () => {
+    const passOne = (id: string, clipIndex: number) =>
+      event({ id, clipIndex, videoMs: clipIndex * 25_000, precisionMs: 30_000 })
+    const merged = mergeAdjacent([passOne("a", 0), passOne("c", 2), passOne("b", 1)])
+    expect(merged.map((e) => [e.id, e.clipIndex, e.videoMs])).toEqual([["a", 0, 0]])
   })
 
   it("does not merge clips two apart", () => {

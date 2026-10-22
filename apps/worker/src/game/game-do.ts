@@ -11,7 +11,6 @@ import { migrate } from "./db/migrate.ts"
 import { MIGRATIONS } from "./db/migrations.ts"
 import { type GameApi, gameApi } from "./http.ts"
 import { checkProbe, type IngestDeps, probeKey, setSource, start } from "./ingest.ts"
-import { mergeBack } from "./merge-back.ts"
 import { type Publish, publisherFor } from "./publish.ts"
 import { checkRanges } from "./ranges.ts"
 import { acceptSocket, answerClose, type Broadcast, broadcastTo, heartbeat } from "./sockets.ts"
@@ -124,7 +123,6 @@ export class GameDO extends DurableObject<Env> {
     markClassification(storage.sql, clipIndex, "done", reading.gameState.state, reading.gameState.confidence)
     const events = eventsFromPassOne(clip, reading, game.mode, game.thresholds, Date.now(), () => crypto.randomUUID())
     replaceEventsForClip(storage, clipIndex, events)
-    mergeBack(storage)
     this.settleClassification()
     await this.publish(["clips", "events", "game"])
   }

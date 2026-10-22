@@ -15,7 +15,7 @@ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "e
 import { HttpApiBuilder, HttpApiMiddleware } from "effect/http-api"
 import { errorResponse } from "../error-response.ts"
 import { logRefusal, routeOf } from "../logs.ts"
-import { countsOf, readClips, readEvents, readGame } from "./store.ts"
+import { countsOf, mergedEventsOf, readClips, readGame } from "./store.ts"
 
 export interface GameActions {
   setSource(url: string): Promise<Game>
@@ -86,7 +86,7 @@ const clipsHandlers = (sql: SqlStorage) =>
 
 const eventsHandlers = (sql: SqlStorage) =>
   HttpApiBuilder.group(Api, "events", (handlers) =>
-    handlers.handle("listEvents", () => Effect.map(existingGame(sql), () => readEvents(sql))),
+    handlers.handle("listEvents", () => Effect.map(existingGame(sql), () => mergedEventsOf(sql))),
   )
 
 export const gameApi = (ctx: DurableObjectState, actions: GameActions): GameApi => {

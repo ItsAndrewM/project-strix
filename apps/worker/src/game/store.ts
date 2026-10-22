@@ -1,13 +1,22 @@
+/**
+ * The game DO's SQLite store. The machine's events (`auto`, `draft`, `discarded`) are stored exactly as each clip's
+ * answer derived them; overlapping windows' sightings of one event are merged only when read (`mergedEventsOf`), so
+ * the result never depends on the order answers arrive in and a redelivered answer cannot erase a neighbour's
+ * sighting. Events a person decided (`accepted`, `rejected`, `manual`) are never merged. Event counts come from that
+ * view, so a merged event counts once.
+ */
 import {
   ClefResponse,
   Clip,
   Game,
   type GameCounts,
+  type EventStatus,
   GameEvent,
   type GameState,
   type GameStatus,
   Rendition,
 } from "@strix/contracts"
+import { mergeAdjacent } from "@strix/domain"
 import { Schema } from "effect"
 
 const jsonOf = <S extends Schema.Top>(schema: S) => Schema.fromJsonString(Schema.toCodecJson(schema))
@@ -185,21 +194,32 @@ export const readEvents = (sql: SqlStorage): ReadonlyArray<GameEvent> =>
     .toArray()
     .map(({ json }) => decodeEvent(json))
 
+const MACHINE: ReadonlySet<EventStatus> = new Set(["auto", "draft", "discarded"])
+
+const UNCOUNTED: ReadonlySet<EventStatus> = new Set(["discarded", "rejected"])
+
+const byTimeThenId = (a: GameEvent, b: GameEvent): number => a.videoMs - b.videoMs || (a.id < b.id ? -1 : 1)
+
+export const mergedEventsOf = (sql: SqlStorage): ReadonlyArray<GameEvent> => {
+  const events = readEvents(sql)
+  const kept = events.filter((event) => !MACHINE.has(event.status))
+  const machine = mergeAdjacent(events.filter((event) => MACHINE.has(event.status)))
+  return [...kept, ...machine].toSorted(byTimeThenId)
+}
+
 export const countsOf = (sql: SqlStorage): GameCounts => {
   const clips = sql
     .exec<{ clips: number; classified: number }>(
       "SELECT COUNT(*) AS clips, COUNT(*) FILTER (WHERE classification = 'done') AS classified FROM clips",
     )
     .one()
-  const events = sql
-    .exec<{ events: number; drafts: number; needs: number }>(
-      `SELECT COUNT(*) AS events,
-         COUNT(*) FILTER (WHERE status = 'draft') AS drafts,
-         COUNT(*) FILTER (WHERE needs_count > 0) AS needs
-       FROM events WHERE status NOT IN ('discarded', 'rejected')`,
-    )
-    .one()
-  return { ...clips, ...events }
+  const counted = mergedEventsOf(sql).filter((event) => !UNCOUNTED.has(event.status))
+  return {
+    ...clips,
+    events: counted.length,
+    drafts: counted.filter((event) => event.status === "draft").length,
+    needs: counted.filter((event) => event.needs.length > 0).length,
+  }
 }
 
 const everyClipClassified = (sql: SqlStorage): boolean => {

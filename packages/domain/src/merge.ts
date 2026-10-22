@@ -6,6 +6,7 @@ export interface Mergeable {
   readonly clipIndex: number
   readonly videoMs: number
   readonly confidence: number
+  readonly precisionMs: number
 }
 
 interface Group<T extends Mergeable> {
@@ -13,7 +14,10 @@ interface Group<T extends Mergeable> {
   readonly clipIndexes: ReadonlySet<number>
   readonly latestClipIndex: number
   readonly latestVideoMs: number
+  readonly latestPrecisionMs: number
 }
+
+const windowFor = (a: number, b: number): number => Math.max(MERGE_WITHIN_MS, Math.min(a, b))
 
 export const mergeAdjacent = <T extends Mergeable>(events: ReadonlyArray<T>): ReadonlyArray<T> => {
   const sorted = events.toSorted((a, b) => a.videoMs - b.videoMs || a.clipIndex - b.clipIndex)
@@ -25,7 +29,7 @@ export const mergeAdjacent = <T extends Mergeable>(events: ReadonlyArray<T>): Re
         g.event.team === candidate.team &&
         !g.clipIndexes.has(candidate.clipIndex) &&
         Math.abs(candidate.clipIndex - g.latestClipIndex) === 1 &&
-        Math.abs(candidate.videoMs - g.latestVideoMs) <= MERGE_WITHIN_MS,
+        Math.abs(candidate.videoMs - g.latestVideoMs) <= windowFor(candidate.precisionMs, g.latestPrecisionMs),
     )
     if (group === undefined) {
       groups.push({
@@ -33,6 +37,7 @@ export const mergeAdjacent = <T extends Mergeable>(events: ReadonlyArray<T>): Re
         clipIndexes: new Set([candidate.clipIndex]),
         latestClipIndex: candidate.clipIndex,
         latestVideoMs: candidate.videoMs,
+        latestPrecisionMs: candidate.precisionMs,
       })
       continue
     }
@@ -46,6 +51,7 @@ export const mergeAdjacent = <T extends Mergeable>(events: ReadonlyArray<T>): Re
       clipIndexes: new Set([...group.clipIndexes, candidate.clipIndex]),
       latestClipIndex: candidate.clipIndex,
       latestVideoMs: candidate.videoMs,
+      latestPrecisionMs: candidate.precisionMs,
     }
   }
   return groups.map((group) => group.event)

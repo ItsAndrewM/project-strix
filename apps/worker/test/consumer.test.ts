@@ -5,6 +5,7 @@ import { MAX_CLIP_BYTES } from "../src/classify/consumer.ts"
 import type { ClassifyJob } from "../src/classify/jobs.ts"
 import { readAnswers } from "../src/game/store.ts"
 import worker from "../src/index.ts"
+import { GOAL } from "./answers.ts"
 import { applySchema, asDev, clearGames, NEW_GAME, postJson, SENT } from "./games.ts"
 
 const SOURCE_URL = "https://video.example.test/game.mp4"
@@ -78,6 +79,20 @@ describe("the classify queue consumer", () => {
       status: "ready",
       counts: { clips: 3, classified: 3, events: 1, drafts: 0 },
     })
+  })
+
+  it("lists a goal two adjacent windows saw as one event and counts it once, through redelivery", async () => {
+    const { id, jobs } = await startedAutoGame()
+    await consumed(jobs)
+    await env.GAME.getByName(id).answerReady(1, 1, 0, GOAL)
+    await consumed(jobs.slice(0, 1), 2)
+
+    const events = await eventsOf(id)
+    expect(events.map(({ type, status, clipIndex, videoMs }) => ({ type, status, clipIndex, videoMs }))).toEqual([
+      { type: "goal", status: "auto", clipIndex: 0, videoMs: 0 },
+      { type: "penalty", status: "discarded", clipIndex: 2, videoMs: 50_000 },
+    ])
+    expect(await gameOf(id)).toMatchObject({ status: "ready", counts: { events: 1, drafts: 0 } })
   })
 
   it("fails a clip over 14 MiB without sending it to Clef", async () => {
