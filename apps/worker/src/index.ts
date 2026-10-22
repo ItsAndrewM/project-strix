@@ -1,13 +1,11 @@
 import { callerOf, remoteAccessKeys } from "./access.ts"
 import { routeApi } from "./api-router.ts"
-import type { ClassifyMessage, Env } from "./env.ts"
+import { consume } from "./classify/consumer.ts"
+import type { ClassifyJob } from "./classify/jobs.ts"
+import type { Env } from "./env.ts"
 
 export { GameDO } from "./game/game-do.ts"
 export { SlicerContainer } from "./slicer/slicer-container.ts"
-
-const ackAll = (batch: MessageBatch<ClassifyMessage>): void => {
-  for (const message of batch.messages) message.ack()
-}
 
 export default {
   async fetch(request, env, ctx) {
@@ -15,5 +13,5 @@ export default {
     const caller = await callerOf(request, ctx.access, env, remoteAccessKeys)
     return routeApi(request, caller, env)
   },
-  queue: ackAll,
-} satisfies ExportedHandler<Env, ClassifyMessage>
+  queue: consume,
+} satisfies ExportedHandler<Env, ClassifyJob>

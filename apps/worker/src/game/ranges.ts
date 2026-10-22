@@ -11,7 +11,7 @@ import { logRangeFailure, logWindowFailure } from "../logs.ts"
 import type { SliceProgress, SliceRequest, SliceWindow } from "../slicer/protocol.ts"
 import type { IngestDeps } from "./ingest.ts"
 import { type RangeStatus, type Ranges, statusAfterRanges, timeOutRanges } from "./progress.ts"
-import { changeGame, countsOf, markClassification, readGame } from "./store.ts"
+import { changeGame, countsOf, markClassification, readGame, readiedIfClassified } from "./store.ts"
 
 export const SLICING_CHECK_MS = 60_000
 
@@ -103,7 +103,8 @@ const runRange = async (deps: IngestDeps, index: number, range: Range): Promise<
 const settle = async (deps: IngestDeps): Promise<void> => {
   const { storage } = deps.ctx
   if (readGame(storage.sql)?.status !== "slicing") return
-  const status = statusAfterRanges(readRanges(storage), countsOf(storage.sql).clips)
+  const sliced = statusAfterRanges(readRanges(storage), countsOf(storage.sql).clips)
+  const status = readiedIfClassified(storage.sql, sliced)
   if (status === "slicing") return
   changeGame(storage.sql, (game) => ({ ...game, status, failure: status === "failed" ? NO_CLIPS : null }))
   await deps.publish(["game"])

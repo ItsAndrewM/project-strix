@@ -40,3 +40,11 @@ export const logWindowFailure = (gameId: string, index: number, reason: string):
 export const logIndexFailure = (gameId: string, cause: unknown): void => {
   console.error({ event: "index-failed", gameId, cause: messageOf(cause) })
 }
+
+export const logClassifyFailure = (gameId: string, clipIndex: number, attempts: number, cause: unknown): void => {
+  console.error({ event: "classify-failed", gameId, clipIndex, attempts, cause: messageOf(cause) })
+}
+
+export const logClassificationFailure = (gameId: string, clipIndex: number, reason: string): void => {
+  console.error({ event: "classification-failed", gameId, clipIndex, reason })
+}

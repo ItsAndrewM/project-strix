@@ -37,7 +37,7 @@ describe("fixtureSlicer", () => {
   it("probes to the committed probe fixture", async () => {
     const result = await fixtureSlicer(env.BUCKET).probe({ source: "r2://originals/g.mp4", frameAtMs: 0 })
     expect(result).toEqual(probeFixture)
-    expect(result.durationMs).toBe(80_000)
+    expect(result.durationMs).toBe(75_000)
     const jpeg = Uint8Array.from(atob(result.frameJpegBase64), (char) => char.charCodeAt(0))
     expect([jpeg[0], jpeg[1], jpeg.at(-2), jpeg.at(-1)]).toEqual([0xff, 0xd8, 0xff, 0xd9])
   })

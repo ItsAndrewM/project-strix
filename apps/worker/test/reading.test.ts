@@ -137,6 +137,30 @@ describe("readPassOne", () => {
     expect(error.message).toContain("shots_away")
   })
 
+  it("resolves a shot level Clef keyed by its legend label", () => {
+    const answer: ClefAnswer = {
+      type: "score",
+      score: 4,
+      legend: { 0: "0", 1: "1", 2: "2", 3: "3", 4: "4 or more" },
+      probabilities: { "0": 0.05, "1": 0.05, "2": 0.1, "3": 0.1, "4 or more": 0.7 },
+      confidence: 0.7,
+    }
+    expect(readPassOne(withAnswer(GOAL, "shots_home", answer)).shotsHome).toEqual({ count: 4, confidence: 70 })
+  })
+
+  it("fails when the likeliest label matches more than one legend entry", () => {
+    const answer: ClefAnswer = {
+      type: "score",
+      score: 3,
+      legend: { 0: "0", 1: "1", 2: "2", 3: "many", 4: "many" },
+      probabilities: { "0": 0.1, "1": 0.1, "2": 0.1, many: 0.7 },
+      confidence: 0.7,
+    }
+    const error = failureOf(() => readPassOne(withAnswer(GOAL, "shots_home", answer)))
+    expect(error).toBeInstanceOf(ReadingError)
+    expect(error.message).toContain("shots_home")
+  })
+
   it("fails when a probability is outside 0..1", () => {
     const error = failureOf(() => readPassOne(withAnswer(GOAL, "goal", { type: "noul", noul: 1.4 })))
     expect(error).toBeInstanceOf(ReadingError)

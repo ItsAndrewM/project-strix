@@ -2,7 +2,8 @@
  * Reads Clef's pass-one answers. An id that is missing, answered with a different `type` than asked, answered with
  * no or out-of-range probabilities, or whose likeliest key was not among the criteria asked fails the whole clip with
  * a `ReadingError` naming the id, so a malformed answer never becomes an event. Choices and scores take the likeliest
- * key from `probabilities` rather than trusting Clef's own `choice` or `score`.
+ * key from `probabilities` rather than trusting Clef's own `choice` or `score`; a score keyed by its legend label
+ * rather than its level resolves through the legend when exactly one entry carries that label.
  */
 import { type ClefAnswer, type ClefResponse, GameState, Infraction, PenaltyClass, Side } from "@strix/contracts"
 import { argmax, percentOf } from "@strix/domain"
@@ -44,13 +45,16 @@ interface Chosen<K extends string> {
 
 type IsKey<K extends string> = (key: string) => key is K
 
+type ScoreAnswer = Extract<ClefAnswer, { readonly type: "score" }>
+
 const ShotLevel = Schema.Literals(["0", "1", "2", "3", "4"])
+type ShotLevel = typeof ShotLevel.Type
 
 const isSide: IsKey<Side> = Schema.is(Side)
 const isGameState: IsKey<GameState> = Schema.is(GameState)
 const isInfraction: IsKey<Infraction> = Schema.is(Infraction)
 const isPenaltyClass: IsKey<PenaltyClass> = Schema.is(PenaltyClass)
-const isShotLevel: IsKey<typeof ShotLevel.Type> = Schema.is(ShotLevel)
+const isShotLevel: IsKey<ShotLevel> = Schema.is(ShotLevel)
 
 const answerTo = (response: ClefResponse, id: PassOneId): ClefAnswer => {
   const answer = response.answers[id]
@@ -68,13 +72,29 @@ const probabilityOf = (id: PassOneId, value: number): number => {
   return value
 }
 
-const likeliestKey = <K extends string>(id: PassOneId, probabilities: Record<string, number>, isKey: IsKey<K>): K => {
+const notAsked = (id: PassOneId, key: string): ReadingError =>
+  new ReadingError(`Clef's likeliest answer to ${id} is "${key}", which was not asked`)
+
+const argmaxKey = (id: PassOneId, probabilities: Record<string, number>): string => {
   const entries = Object.entries(probabilities)
   if (entries.length === 0) throw new ReadingError(`Clef answered ${id} with no probabilities`)
   for (const [, probability] of entries) probabilityOf(id, probability)
-  const { key } = argmax(new Map(entries))
-  if (!isKey(key)) throw new ReadingError(`Clef's likeliest answer to ${id} is "${key}", which was not asked`)
+  return argmax(new Map(entries)).key
+}
+
+const likeliestKey = <K extends string>(id: PassOneId, probabilities: Record<string, number>, isKey: IsKey<K>): K => {
+  const key = argmaxKey(id, probabilities)
+  if (!isKey(key)) throw notAsked(id, key)
   return key
+}
+
+const likeliestLevel = (id: PassOneId, answer: ScoreAnswer): ShotLevel => {
+  const key = argmaxKey(id, answer.probabilities)
+  if (isShotLevel(key)) return key
+  const labelled = Object.entries(answer.legend).filter(([, label]) => label === key)
+  const [only] = labelled
+  if (labelled.length !== 1 || only === undefined || !isShotLevel(only[0])) throw notAsked(id, key)
+  return only[0]
 }
 
 const noulOf = (response: ClefResponse, id: PassOneId): number => {
@@ -98,7 +118,7 @@ const teamOf = (response: ClefResponse, id: PassOneId): TeamReading => {
 const shotsOf = (response: ClefResponse, id: PassOneId): ShotsReading => {
   const answer = answerTo(response, id)
   if (answer.type !== "score") throw wrongType(id, "score", answer)
-  const level = likeliestKey(id, answer.probabilities, isShotLevel)
+  const level = likeliestLevel(id, answer)
   return { count: Number(level), confidence: percentOf(probabilityOf(id, answer.confidence)) }
 }
 

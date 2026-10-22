@@ -1,11 +1,6 @@
+import type { ClassifyJob } from "./classify/jobs.ts"
 import type { GameDO } from "./game/game-do.ts"
 import type { SlicerContainer } from "./slicer/slicer-container.ts"
-
-export interface ClassifyMessage {
-  readonly gameId: string
-  readonly clipIndex: number
-  readonly pass: 1
-}
 
 export interface Env {
   readonly DB: D1Database
@@ -14,7 +9,7 @@ export interface Env {
   readonly MEDIA: MediaBinding
   readonly GAME: DurableObjectNamespace<GameDO>
   readonly SLICER: DurableObjectNamespace<SlicerContainer>
-  readonly CLASSIFY: Queue<ClassifyMessage>
+  readonly CLASSIFY: Queue<ClassifyJob>
   readonly ACCESS_TEAM_DOMAIN?: string
   readonly ACCESS_AUD?: string
   readonly R2_ACCESS_KEY_ID?: string

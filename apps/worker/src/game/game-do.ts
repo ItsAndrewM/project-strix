@@ -1,20 +1,47 @@
 import { type ClefResponse, type Clip, type Game, NotFound, socketPath, Unauthorized } from "@strix/contracts"
 import { DurableObject } from "cloudflare:workers"
+import { eventsFromPassOne } from "../classify/events-from-pass-one.ts"
+import { type PassOneReading, ReadingError, readPassOne } from "../classify/reading.ts"
 import type { Env } from "../env.ts"
 import { errorResponse } from "../error-response.ts"
-import { logDefect, logEnqueueFailure, logRefusal, routeOf } from "../logs.ts"
+import { logClassificationFailure, logDefect, logEnqueueFailure, logRefusal, routeOf } from "../logs.ts"
 import { urlsFor } from "../r2/presign.ts"
 import { slicerFor } from "../slicer/slicer.ts"
 import { migrate } from "./db/migrate.ts"
 import { MIGRATIONS } from "./db/migrations.ts"
 import { type GameApi, gameApi } from "./http.ts"
 import { checkProbe, type IngestDeps, probeKey, setSource, start } from "./ingest.ts"
+import { mergeBack } from "./merge-back.ts"
 import { type Publish, publisherFor } from "./publish.ts"
 import { checkRanges } from "./ranges.ts"
 import { acceptSocket, answerClose, type Broadcast, broadcastTo, heartbeat } from "./sockets.ts"
-import { changeGame, markClassification, readGame, saveClip, saveGame } from "./store.ts"
+import {
+  changeGame,
+  markClassification,
+  readClip,
+  readGame,
+  readiedIfClassified,
+  replaceEventsForClip,
+  saveAnswer,
+  saveClip,
+  saveGame,
+} from "./store.ts"
 
 const probePath = (gameId: string): string => `/api/games/${gameId}/probe.jpg`
+
+export interface ClipSnapshot {
+  readonly game: Game
+  readonly clip: Clip
+}
+
+const readingOf = (response: ClefResponse): PassOneReading | ReadingError => {
+  try {
+    return readPassOne(response)
+  } catch (error) {
+    if (error instanceof ReadingError) return error
+    throw error
+  }
+}
 
 const PROBE_CACHE = "private, max-age=3600"
 
@@ -79,12 +106,40 @@ export class GameDO extends DurableObject<Env> {
     await this.publish(["clips", "game"])
   }
 
-  answerReady(_clipIndex: number, _pass: number, _window: number, _response: ClefResponse): void {
-    throw new Error("not implemented")
+  snapshot(clipIndex: number): ClipSnapshot {
+    const sql = this.ctx.storage.sql
+    const game = readGame(sql)
+    const clip = readClip(sql, clipIndex)
+    if (game === undefined) throw new Error("the game has not been created")
+    if (clip === undefined) throw new Error(`the game has no clip ${clipIndex}`)
+    return { game, clip }
   }
 
-  classificationFailed(_clipIndex: number, _reason: string): void {
-    throw new Error("not implemented")
+  async answerReady(clipIndex: number, pass: number, window: number, response: ClefResponse): Promise<void> {
+    const { storage } = this.ctx
+    const { game, clip } = this.snapshot(clipIndex)
+    saveAnswer(storage.sql, clipIndex, pass, window, response)
+    const reading = readingOf(response)
+    if (reading instanceof ReadingError) return this.classificationFailed(clipIndex, reading.message)
+    markClassification(storage.sql, clipIndex, "done", reading.gameState.state, reading.gameState.confidence)
+    const events = eventsFromPassOne(clip, reading, game.mode, game.thresholds, Date.now(), () => crypto.randomUUID())
+    replaceEventsForClip(storage, clipIndex, events)
+    mergeBack(storage)
+    this.settleClassification()
+    await this.publish(["clips", "events", "game"])
+  }
+
+  async classificationFailed(clipIndex: number, reason: string): Promise<void> {
+    const { game } = this.snapshot(clipIndex)
+    markClassification(this.ctx.storage.sql, clipIndex, "failed", null, null)
+    logClassificationFailure(game.id, clipIndex, reason)
+    this.settleClassification()
+    await this.publish(["clips", "game"])
+  }
+
+  private settleClassification(): void {
+    const sql = this.ctx.storage.sql
+    changeGame(sql, (game) => ({ ...game, status: readiedIfClassified(sql, game.status) }))
   }
 
   private ingest(run: (deps: IngestDeps) => Promise<Game>): Promise<Game> {

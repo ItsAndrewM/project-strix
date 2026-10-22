@@ -7,6 +7,8 @@ import worker from "../src/index.ts"
 export const ORIGIN = "https://strix.example.test"
 export const EMAIL = "andrew@example.test"
 
+export const SENT: QueueSendResponse = { metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } } }
+
 export const NEW_GAME: NewGame = {
   name: "Vipers at Wolves",
   home: { name: "Wolves", jersey: "white", roster: [9, 17] },

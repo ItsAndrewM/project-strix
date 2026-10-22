@@ -10,11 +10,11 @@ import { listGames } from "../src/games-index/games-index.ts"
 import { urlsFor } from "../src/r2/presign.ts"
 import { RENDITIONS } from "../src/slicer/protocol.ts"
 import type { Slicer } from "../src/slicer/slicer.ts"
-import { applySchema, asDev, clearGames, createGame, ORIGIN, postJson } from "./games.ts"
+import { applySchema, asDev, clearGames, createGame, ORIGIN, postJson, SENT } from "./games.ts"
 
 const SOURCE_URL = "https://video.example.test/game.mp4"
 const CROP: Crop = { x: 0, y: 40, width: 1280, height: 600 }
-const FIXTURE_DURATION_MS = 80_000
+const FIXTURE_DURATION_MS = 75_000
 const FIXTURE_WINDOWS = windowsFor(FIXTURE_DURATION_MS)
 
 const flags = (values: { FIXTURES_FAIL_PROBE?: "1" | undefined; FIXTURES_FAIL_SLICE_AFTER?: string | undefined }) => {
@@ -59,7 +59,7 @@ const started = async (crop: Crop | null = CROP): Promise<{ id: string; sends: R
   return { id, sends }
 }
 
-const spySends = () => vi.spyOn(env.CLASSIFY, "send")
+const spySends = () => vi.spyOn(env.CLASSIFY, "send").mockResolvedValue(SENT)
 
 const listen = async (id: string): Promise<ReadonlyArray<string>> => {
   const response = await asDev(socketPath(id), { headers: { upgrade: "websocket", origin: ORIGIN } })
@@ -190,6 +190,7 @@ describe("POST /api/games/:id/start", () => {
   it("announces each clip and the settled game on the socket", async () => {
     const id = await probed()
     const messages = await listen(id)
+    spySends()
     await postJson(`/api/games/${id}/start`, { crop: null })
     await settled(id)
     await vi.waitFor(() =>

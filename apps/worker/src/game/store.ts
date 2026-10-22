@@ -1,4 +1,13 @@
-import { ClefResponse, Clip, Game, type GameCounts, GameEvent, type GameState, Rendition } from "@strix/contracts"
+import {
+  ClefResponse,
+  Clip,
+  Game,
+  type GameCounts,
+  GameEvent,
+  type GameState,
+  type GameStatus,
+  Rendition,
+} from "@strix/contracts"
 import { Schema } from "effect"
 
 const jsonOf = <S extends Schema.Top>(schema: S) => Schema.fromJsonString(Schema.toCodecJson(schema))
@@ -192,3 +201,15 @@ export const countsOf = (sql: SqlStorage): GameCounts => {
     .one()
   return { ...clips, ...events }
 }
+
+const everyClipClassified = (sql: SqlStorage): boolean => {
+  const { clips, pending } = sql
+    .exec<{ clips: number; pending: number }>(
+      "SELECT COUNT(*) AS clips, COUNT(*) FILTER (WHERE classification = 'pending') AS pending FROM clips",
+    )
+    .one()
+  return clips > 0 && pending === 0
+}
+
+export const readiedIfClassified = (sql: SqlStorage, status: GameStatus): GameStatus =>
+  status === "classifying" && everyClipClassified(sql) ? "ready" : status
