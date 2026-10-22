@@ -1,0 +1,131 @@
+{
+  "model": "@cf/cloudflare/clef-omni",
+  "answers": {
+    "game_state": {
+      "type": "choice",
+      "choice": "live",
+      "probabilities": {
+        "live": 0.62,
+        "stoppage": 0.34,
+        "intermission": 0.01,
+        "warmup": 0.01,
+        "empty": 0.02
+      },
+      "confidence": 0.62
+    },
+    "goal": {
+      "type": "noul",
+      "noul": 0.03
+    },
+    "goal_team": {
+      "type": "choice",
+      "choice": "home",
+      "probabilities": {
+        "home": 0.51,
+        "away": 0.49
+      },
+      "confidence": 0.51
+    },
+    "penalty": {
+      "type": "noul",
+      "noul": 0.66
+    },
+    "penalty_team": {
+      "type": "choice",
+      "choice": "home",
+      "probabilities": {
+        "home": 0.74,
+        "away": 0.26
+      },
+      "confidence": 0.74
+    },
+    "infraction": {
+      "type": "choice",
+      "choice": "slashing",
+      "probabilities": {
+        "holding": 0.03,
+        "slashing": 0.58,
+        "roughing": 0.03,
+        "cross_checking": 0.03,
+        "checking_from_behind": 0.03,
+        "tripping": 0.03,
+        "hooking": 0.03,
+        "high_sticking": 0.03,
+        "interference": 0.03,
+        "delay_of_game": 0.03,
+        "too_many_men": 0.03,
+        "boarding": 0.03,
+        "elbowing": 0.03,
+        "unsportsmanlike": 0.03,
+        "other": 0.03
+      },
+      "confidence": 0.58
+    },
+    "penalty_class": {
+      "type": "choice",
+      "choice": "minor",
+      "probabilities": {
+        "minor": 0.83,
+        "double_minor": 0.09,
+        "major": 0.05,
+        "misconduct": 0.03
+      },
+      "confidence": 0.83
+    },
+    "shots_home": {
+      "type": "score",
+      "score": 0,
+      "legend": {
+        "0": "0",
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "4": "4 or more"
+      },
+      "probabilities": {
+        "0": 0.7,
+        "1": 0.22,
+        "2": 0.05,
+        "3": 0.02,
+        "4": 0.01
+      },
+      "confidence": 0.7
+    },
+    "shots_away": {
+      "type": "score",
+      "score": 0,
+      "legend": {
+        "0": "0",
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "4": "4 or more"
+      },
+      "probabilities": {
+        "0": 0.45,
+        "1": 0.4,
+        "2": 0.1,
+        "3": 0.03,
+        "4": 0.02
+      },
+      "confidence": 0.45
+    },
+    "goalie_change": {
+      "type": "noul",
+      "noul": 0.04
+    },
+    "goalie_change_team": {
+      "type": "choice",
+      "choice": "home",
+      "probabilities": {
+        "home": 0.52,
+        "away": 0.48
+      },
+      "confidence": 0.52
+    }
+  },
+  "usage": {
+    "input_tokens": 18467,
+    "output_tokens": 241
+  }
+}
