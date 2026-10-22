@@ -9,11 +9,18 @@ import { NotFound, ServiceUnavailable } from "@strix/contracts"
 import probeFixture from "../../fixtures/probe.json"
 import type { Env } from "../env.ts"
 import { errorResponse } from "../error-response.ts"
+import { logThumbFailure, messageOf } from "../logs.ts"
 import { bytesOf } from "./ingest.ts"
 
 const MEDIA_CACHE = "private, max-age=3600"
 const THUMB_FRAME_AT = "15s"
-const BYTE_RANGE = /^bytes=(\d*)-(\d*)$/
+const BYTE_RANGE = /^bytes=(?:(\d+)-\d*|-(\d+))$/
+
+class FrameFailed extends Error {
+  constructor(readonly status: number) {
+    super(`media transformation answered ${status}`)
+  }
+}
 
 const viewKey = (gameId: string, index: number): string => `clips/${gameId}/${index}/view.mp4`
 const thumbKey = (gameId: string, index: number): string => `thumbs/${gameId}/${index}.jpg`
@@ -32,10 +39,13 @@ const spanOf = ({ range, size }: R2ObjectBody): Span => {
   return { start: size - range.suffix, length: range.suffix }
 }
 
-const startsPastEnd = (rangeHeader: string, size: number): boolean => {
-  const [, first = "", last = ""] = BYTE_RANGE.exec(rangeHeader.trim()) ?? []
-  return first === "" ? last !== "" && Number(last) === 0 : Number(first) >= size
-}
+const byteRangeOf = (request: Request): RegExpExecArray | null =>
+  BYTE_RANGE.exec(request.headers.get("range")?.trim() ?? "")
+
+const startsPastEnd = ([, first, suffix]: RegExpExecArray, size: number): boolean =>
+  first === undefined ? Number(suffix) === 0 : Number(first) >= size
+
+const isUnsatisfiable = (cause: unknown): boolean => messageOf(cause).includes("not satisfiable")
 
 const viewHeaders = (length: number): Headers =>
   new Headers({
@@ -55,30 +65,30 @@ const partial = (object: R2ObjectBody): Response => {
   return new Response(object.body, { status: 206, headers })
 }
 
-const getView = async (env: Env, key: string, request: Request): Promise<R2ObjectBody | Response | null> => {
+const getView = async (env: Env, key: string, range: Headers | null): Promise<R2ObjectBody | Response | null> => {
   try {
-    return await env.BUCKET.get(key, { range: request.headers })
+    return await env.BUCKET.get(key, range === null ? {} : { range })
   } catch (cause) {
-    if (!request.headers.has("range")) throw cause
+    if (range === null || !isUnsatisfiable(cause)) throw cause
     const head = await env.BUCKET.head(key)
     return head === null ? null : notSatisfiable(head.size)
   }
 }
 
 export const serveView = async (env: Env, gameId: string, index: number, request: Request): Promise<Response> => {
-  const object = await getView(env, viewKey(gameId, index), request)
+  const byteRange = byteRangeOf(request)
+  const object = await getView(env, viewKey(gameId, index), byteRange === null ? null : request.headers)
   if (object === null) return errorResponse(new NotFound())
   if (object instanceof Response) return object
-  const rangeHeader = request.headers.get("range")
-  if (rangeHeader === null) return new Response(object.body, { headers: viewHeaders(object.size) })
-  if (!startsPastEnd(rangeHeader, object.size)) return partial(object)
+  if (byteRange === null) return new Response(object.body, { headers: viewHeaders(object.size) })
+  if (!startsPastEnd(byteRange, object.size)) return partial(object)
   await object.body.cancel()
   return notSatisfiable(object.size)
 }
 
 const frameFromView = async (env: Env, view: ReadableStream<Uint8Array>): Promise<Uint8Array> => {
   const response = await env.MEDIA.input(view).output({ mode: "frame", time: THUMB_FRAME_AT, format: "jpg" }).response()
-  if (!response.ok) throw new ServiceUnavailable()
+  if (!response.ok) throw new FrameFailed(response.status)
   return new Uint8Array(await response.arrayBuffer())
 }
 
@@ -95,8 +105,13 @@ export const serveThumb = async (env: Env, gameId: string, index: number): Promi
   const key = thumbKey(gameId, index)
   const stored = await env.BUCKET.get(key)
   if (stored !== null) return jpeg(stored.body)
-  const bytes = await thumbBytes(env, gameId, index)
-  if (bytes === null) return errorResponse(new NotFound())
-  await env.BUCKET.put(key, bytes, { httpMetadata: { contentType: "image/jpeg" } })
-  return jpeg(bytes)
+  try {
+    const bytes = await thumbBytes(env, gameId, index)
+    if (bytes === null) return errorResponse(new NotFound())
+    await env.BUCKET.put(key, bytes, { httpMetadata: { contentType: "image/jpeg" } })
+    return jpeg(bytes)
+  } catch (cause) {
+    logThumbFailure(gameId, index, cause instanceof FrameFailed ? cause.status : null, cause)
+    return errorResponse(new ServiceUnavailable())
+  }
 }
