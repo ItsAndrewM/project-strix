@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest"
-import { FULL_CAPS, frameArgs, HALF_CAPS, outputPath, probeArgs, readProbe, sliceArgs } from "../src/ffmpeg.ts"
+import {
+  FULL_CAPS,
+  frameArgs,
+  frameAtFor,
+  HALF_CAPS,
+  outputPath,
+  probeArgs,
+  readProbe,
+  sliceArgs,
+} from "../src/ffmpeg.ts"
 import type { Rendition } from "../src/protocol.ts"
 
 const SOURCE = "https://x/y.mp4"
@@ -57,10 +66,10 @@ describe("sliceArgs", () => {
   })
 
   it.each([
-    ["model-480", "[m480]", "1M", "2M", "64k"],
-    ["model-720", "[m720]", "2M", "4M", "64k"],
-    ["view", "[view]", "1M", "2M", "96k"],
-  ] as const)("encodes %s as capped H.264 and AAC", (rendition, label, maxrate, bufsize, audio) => {
+    ["model-480", "[m480]", "1M", "2M", "64k", "1"],
+    ["model-720", "[m720]", "2M", "4M", "64k", "1"],
+    ["view", "[view]", "1M", "2M", "96k", undefined],
+  ] as const)("encodes %s as capped H.264 and AAC", (rendition, label, maxrate, bufsize, audio, channels) => {
     const options = outputOptions(args, rendition)
     expect(options.slice(0, 4)).toEqual(["-map", label, "-map", "0:a?"])
     expect(valueAfter(options, "-c:v")).toBe("libx264")
@@ -69,6 +78,7 @@ describe("sliceArgs", () => {
     expect(valueAfter(options, "-bufsize")).toBe(bufsize)
     expect(valueAfter(options, "-c:a")).toBe("aac")
     expect(valueAfter(options, "-b:a")).toBe(audio)
+    expect(options.includes("-ac") ? valueAfter(options, "-ac") : undefined).toBe(channels)
     expect(valueAfter(options, "-movflags")).toBe("+faststart")
   })
 
@@ -107,6 +117,21 @@ describe("frameArgs", () => {
       "mjpeg",
       "-",
     ])
+  })
+})
+
+describe("frameAtFor", () => {
+  it("keeps the requested offset when the source is long enough", () => {
+    expect(frameAtFor(300_000, 3_600_000)).toBe(300_000)
+  })
+
+  it("takes the middle of a source shorter than twice the offset", () => {
+    expect(frameAtFor(300_000, 15_300)).toBe(7_650)
+    expect(frameAtFor(300_000, 15_301)).toBe(7_650)
+  })
+
+  it("takes the first frame of a source with no duration", () => {
+    expect(frameAtFor(300_000, 0)).toBe(0)
   })
 })
 

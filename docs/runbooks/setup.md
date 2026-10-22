@@ -151,9 +151,13 @@ commit you deployed in step 10. From now on that happens after every green `CI` 
    it sends. The games page loads.
 2. Create a game: any name, teams and rosters, and the video URL
    `https://pub-8613b7f94d6146408add8fefb52c52e8.r2.dev/aus-mobile-demo.mp4`. It opens the game page with a probe
-   frame.
-3. Switch on **No overlay** and press **Start**. The timeline strip fills with clips as they are sliced and
-   classified, and the event list shows what the model found (it may be empty).
+   frame. The sample is 15 seconds long, so the frame comes from its middle (a source shorter than 10 minutes is
+   framed at half its length instead of at 5 minutes).
+3. Switch on **No overlay** and press **Start**. The sample is shorter than one 30-second window, so the timeline
+   strip shows exactly one clip; it turns from hatched (pending) to a game-state colour once classified, and the game
+   reaches **ready**. The sample is not hockey, so the event list is most likely empty. A red-striped cell or a
+   "could not be sliced" notice means a window failed: the notice says how many, and **no slicer capacity** means
+   another game held every slicer container (try again in a few minutes).
 4. In the dashboard, **Storage & Databases > Queues > strix-classify** drains to zero with nothing on
    `strix-classify-dlq`, and **Workers & Pages > Containers** lists `strix-slicercontainer`.
 5. In GitHub **Actions**, the `Deploy` run for the step 12 push is green.

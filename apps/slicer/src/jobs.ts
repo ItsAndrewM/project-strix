@@ -6,6 +6,7 @@ import {
   type BitrateCaps,
   FULL_CAPS,
   frameArgs,
+  frameAtFor,
   HALF_CAPS,
   outputPath,
   probeArgs,
@@ -52,8 +53,9 @@ const probeFacts = async (source: string) => {
 
 export async function runProbe(req: ProbeRequest): Promise<ProbeResult> {
   const facts = await probeFacts(req.source)
-  const frame = await run("ffmpeg", frameArgs(req.source, req.frameAtMs))
-  if (frame.length === 0) throw new Error(`no frame at ${req.frameAtMs} ms`)
+  const frameAtMs = frameAtFor(req.frameAtMs, facts.durationMs)
+  const frame = await run("ffmpeg", frameArgs(req.source, frameAtMs))
+  if (frame.length === 0) throw new Error(`no frame at ${frameAtMs} ms`)
   return { ...facts, frameJpegBase64: frame.toString("base64") }
 }
 

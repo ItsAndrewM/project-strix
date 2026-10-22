@@ -20,6 +20,8 @@ export const HALF_CAPS: BitrateCaps = { "model-480": 500, "model-720": 1000, vie
 
 const AUDIO: BitrateCaps = { "model-480": 64, "model-720": 64, view: 96 }
 
+const MONO: ReadonlySet<Rendition> = new Set(["model-480", "model-720"])
+
 const LABELS = { "model-480": "m480", "model-720": "m720", view: "view" } satisfies { [rendition in Rendition]: string }
 
 const seconds = (ms: number): string => String(ms / 1000)
@@ -41,6 +43,9 @@ export const probeArgs = (source: string): string[] => [
   "-show_streams",
   source,
 ]
+
+export const frameAtFor = (requestedMs: number, durationMs: number): number =>
+  Math.min(requestedMs, Math.floor(durationMs / 2))
 
 export const frameArgs = (source: string, atMs: number): string[] => [
   "-hide_banner",
@@ -84,6 +89,7 @@ const outputArgs = (rendition: Rendition, path: string, caps: BitrateCaps): stri
   rate(caps[rendition] * 2),
   "-c:a",
   "aac",
+  ...(MONO.has(rendition) ? ["-ac", "1"] : []),
   "-b:a",
   `${AUDIO[rendition]}k`,
   "-movflags",
