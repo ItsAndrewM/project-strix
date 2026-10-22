@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "pnpm dev:prepare",
     "dev": "pnpm --filter @strix/web dev",
+    "dev:prepare": "cd apps/worker && pnpm exec wrangler d1 migrations apply strix --local --env local --persist-to ../web/.wrangler/state",
     "build": "pnpm --filter @strix/web build",
     "lint": "oxlint --disable-nested-config . && oxfmt --disable-nested-config --check .",
     "format": "oxfmt --disable-nested-config .",
