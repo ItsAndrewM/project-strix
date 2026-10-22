@@ -1,6 +1,6 @@
 import type { Refusal } from "./access.ts"
 
-export type Refused = Refusal | "service-token" | "not-json"
+export type Refused = Refusal | "service-token" | "not-json" | "no-forwarded-email" | "foreign-origin"
 
 export type Outage = "keys-unavailable" | "index-unavailable" | "game-unavailable"
 
