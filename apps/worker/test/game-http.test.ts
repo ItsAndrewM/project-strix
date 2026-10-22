@@ -1,20 +1,8 @@
-import { type Clip, HEARTBEAT, type NewGame, socketPath } from "@strix/contracts"
-import { createExecutionContext, env, runInDurableObject } from "cloudflare:test"
+import { type Clip, HEARTBEAT, socketPath } from "@strix/contracts"
+import { env, runInDurableObject } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { saveClip } from "../src/game/store.ts"
-import worker from "../src/index.ts"
-import { applySchema, clearGames } from "./games.ts"
-
-const ORIGIN = "https://strix.example.test"
-const EMAIL = "andrew@example.test"
-
-const NEW_GAME: NewGame = {
-  name: "Vipers at Wolves",
-  home: { name: "Wolves", jersey: "white", roster: [9, 17] },
-  away: { name: "Vipers", jersey: "red", roster: [] },
-  mode: "review",
-  level: "junior-pro",
-}
+import { applySchema, asDev, clearGames, createGame, ORIGIN } from "./games.ts"
 
 const CLIP: Clip = {
   index: 0,
@@ -24,24 +12,6 @@ const CLIP: Clip = {
   state: null,
   stateConfidence: null,
   classification: "pending",
-}
-
-const devAccess: CloudflareAccessContext = { aud: "strix-local", getIdentity: async () => ({ email: EMAIL }) }
-
-const asDev = (path: string, init: RequestInit<IncomingRequestCfProperties> = {}) => {
-  const ctx = createExecutionContext()
-  Object.defineProperty(ctx, "access", { value: devAccess })
-  return worker.fetch(new Request(`${ORIGIN}${path}`, init), env, ctx)
-}
-
-const createGame = async (): Promise<{ id: string }> => {
-  const response = await asDev("/api/games", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(NEW_GAME),
-  })
-  expect(response.status).toBe(200)
-  return response.json()
 }
 
 const direct = (id: string, path: string, headers: Record<string, string>) =>
@@ -115,21 +85,7 @@ describe("a game's clips and events", () => {
   })
 })
 
-describe("setting a game's source and starting it", () => {
-  it.each([
-    ["source", { url: "https://video.example.test/game.mp4" }],
-    ["start", { crop: null }],
-  ])("answers 404 to /%s until the game can act on it", async (action, body) => {
-    const { id } = await createGame()
-    const response = await asDev(`/api/games/${id}/${action}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    expect(response.status).toBe(404)
-    expect(await response.json()).toEqual({ _tag: "NotFound" })
-  })
-
+describe("starting a game", () => {
   it("answers 400 naming the field of a start payload that isn't one", async () => {
     const { id } = await createGame()
     const response = await asDev(`/api/games/${id}/start`, {

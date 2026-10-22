@@ -22,3 +22,13 @@ export const logOutage = (event: Outage, route: string, cause: string): void => 
 export const logDefect = (context: DefectContext): void => {
   console.error({ event: "defect", ...context })
 }
+
+export const messageOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
+
+export const logRangeFailure = (gameId: string, rangeIndex: number, cause: unknown): void => {
+  console.error({ event: "range-failed", gameId, rangeIndex, cause: messageOf(cause) })
+}
+
+export const logIndexFailure = (gameId: string, cause: unknown): void => {
+  console.error({ event: "index-failed", gameId, cause: messageOf(cause) })
+}

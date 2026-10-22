@@ -65,6 +65,14 @@ export const readGame = (sql: SqlStorage): Game | undefined => {
   return row === undefined ? undefined : decodeGame(row.json)
 }
 
+export const changeGame = (sql: SqlStorage, change: (game: Game) => Game): Game => {
+  const game = readGame(sql)
+  if (game === undefined) throw new Error("the game changed before it was created")
+  const changed = { ...change(game), counts: countsOf(sql) }
+  saveGame(sql, changed)
+  return changed
+}
+
 export const saveClip = (sql: SqlStorage, clip: Clip): void => {
   sql.exec(
     `INSERT INTO clips (${CLIP_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)

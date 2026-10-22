@@ -93,18 +93,18 @@ describe("fixtureSlicer", () => {
 
 describe("slicerFor in the fixture environment", () => {
   it("returns the fixture slicer", async () => {
-    const result = await slicerFor(env, "g", 0).probe({ source: "r2://originals/g.mp4", frameAtMs: 0 })
+    const result = await (await slicerFor(env, "g", 0)).probe({ source: "r2://originals/g.mp4", frameAtMs: 0 })
     expect(result).toEqual(probeFixture)
   })
 
   it("fails the probe when FIXTURES_FAIL_PROBE is set", async () => {
-    const slicer = slicerFor({ ...env, FIXTURES_FAIL_PROBE: "1" }, "g", 0)
+    const slicer = await slicerFor({ ...env, FIXTURES_FAIL_PROBE: "1" }, "g", 0)
     await expect(slicer.probe({ source: "r2://originals/g.mp4", frameAtMs: 0 })).rejects.toThrow("fixture probe failed")
   })
 
   it("fails the slice after FIXTURES_FAIL_SLICE_AFTER clips", async () => {
     const { lines, onProgress } = collect()
-    const slicer = slicerFor({ ...env, FIXTURES_FAIL_SLICE_AFTER: "2" }, "fail-after", 0)
+    const slicer = await slicerFor({ ...env, FIXTURES_FAIL_SLICE_AFTER: "2" }, "fail-after", 0)
 
     await expect(slicer.slice(requestFor("fail-after", [0, 1, 2]), onProgress)).rejects.toThrow(/after 2 clips/)
     expect(lines.map((line) => line.kind)).toEqual(["clip", "clip"])
@@ -112,13 +112,15 @@ describe("slicerFor in the fixture environment", () => {
 
   it("fails before any clip when FIXTURES_FAIL_SLICE_AFTER is 0", async () => {
     const { lines, onProgress } = collect()
-    const slicer = slicerFor({ ...env, FIXTURES_FAIL_SLICE_AFTER: "0" }, "fail-first", 0)
+    const slicer = await slicerFor({ ...env, FIXTURES_FAIL_SLICE_AFTER: "0" }, "fail-first", 0)
 
     await expect(slicer.slice(requestFor("fail-first", [0]), onProgress)).rejects.toThrow(/after 0 clips/)
     expect(lines).toEqual([])
   })
 
-  it("rejects a FIXTURES_FAIL_SLICE_AFTER that is not a count", () => {
-    expect(() => slicerFor({ ...env, FIXTURES_FAIL_SLICE_AFTER: "two" }, "g", 0)).toThrow(/FIXTURES_FAIL_SLICE_AFTER/)
+  it("rejects a FIXTURES_FAIL_SLICE_AFTER that is not a count", async () => {
+    await expect(slicerFor({ ...env, FIXTURES_FAIL_SLICE_AFTER: "two" }, "g", 0)).rejects.toThrow(
+      /FIXTURES_FAIL_SLICE_AFTER/,
+    )
   })
 })

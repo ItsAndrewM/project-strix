@@ -4,6 +4,7 @@ import {
   type Crop,
   CurrentUser,
   type Game,
+  InvalidInput,
   InvalidInputs,
   invalidInputFrom,
   NotFound,
@@ -59,9 +60,13 @@ const existingGame = (sql: SqlStorage): Effect.Effect<Game, NotFound> =>
     return game === undefined ? Effect.fail(new NotFound()) : Effect.succeed(game)
   })
 
-const acted = (run: () => Promise<Game>): Effect.Effect<Game, NotFound> =>
+const acted = (run: () => Promise<Game>): Effect.Effect<Game, NotFound | InvalidInput> =>
   Effect.tryPromise({ try: run, catch: (cause) => cause }).pipe(
-    Effect.catchIf((error): error is NotFound => error instanceof NotFound, Effect.fail, Effect.die),
+    Effect.catchIf(
+      (error): error is NotFound | InvalidInput => error instanceof NotFound || error instanceof InvalidInput,
+      Effect.fail,
+      Effect.die,
+    ),
   )
 
 const gamesHandlers = (sql: SqlStorage, actions: GameActions) =>
