@@ -5,6 +5,7 @@ export default defineConfig({
   categories: { correctness: "error" },
   options: { denyWarnings: true, reportUnusedDisableDirectives: "error" },
   ignorePatterns: [
+    "apps/web/src/components/ui/**",
     ".agent/**",
     ".agents/**",
     ".claude/**",

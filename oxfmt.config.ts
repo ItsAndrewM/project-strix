@@ -6,6 +6,7 @@ export default defineConfig({
   sortImports: { newlinesBetween: false },
   ignorePatterns: [
     "**/*.md",
+    "apps/web/src/components/ui/**",
     ".agent/**",
     ".agents/**",
     ".claude/**",
