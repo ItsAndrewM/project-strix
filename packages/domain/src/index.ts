@@ -1,1 +1,7 @@
-export {}
+export { RANGE_MS, STEP_MS, WINDOW_MS, rangesFor, windowsFor } from "./windows.ts"
+export type { Range, Window } from "./windows.ts"
+export { decide } from "./thresholds.ts"
+export type { Decision, Mode, Thresholds } from "./thresholds.ts"
+export { argmax, percentOf } from "./confidence.ts"
+export { MERGE_WITHIN_MS, mergeAdjacent } from "./merge.ts"
+export type { Mergeable } from "./merge.ts"
