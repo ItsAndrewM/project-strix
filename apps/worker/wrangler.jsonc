@@ -7,13 +7,80 @@
   "routes": [{ "pattern": "strix.andamonium.dev", "custom_domain": true }],
   "workers_dev": false,
   "preview_urls": false,
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } },
   "assets": {
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"],
   },
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "https://misty-wildflower-0505.cloudflareaccess.com",
+    "ACCESS_AUD": "",
+    "R2_ENDPOINT": "https://6624f09210327baade61004af0d9be84.r2.cloudflarestorage.com",
+  },
+  "d1_databases": [{ "binding": "DB", "database_name": "strix", "database_id": "", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "strix" }],
+  "ai": { "binding": "AI" },
+  "media": { "binding": "MEDIA" },
+  "queues": {
+    "producers": [{ "binding": "CLASSIFY", "queue": "strix-classify" }],
+    "consumers": [
+      { "queue": "strix-classify", "max_batch_size": 1, "max_retries": 3, "dead_letter_queue": "strix-classify-dlq" },
+    ],
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "GAME", "class_name": "GameDO" },
+      { "name": "SLICER", "class_name": "SlicerContainer" },
+    ],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GameDO", "SlicerContainer"] }],
+  "containers": [
+    {
+      "class_name": "SlicerContainer",
+      "image": "../slicer/Dockerfile",
+      "max_instances": 6,
+      "instance_type": "standard-2",
+    },
+  ],
+  "access": {
+    "dev": {
+      "aud": "strix-local",
+      "identity": { "email": "andrew@example.test", "name": "Andrew (local)" },
+    },
+  },
   "env": {
     "local": {
       "routes": [],
+      "containers": [],
+      "vars": {
+        "ACCESS_TEAM_DOMAIN": "https://misty-wildflower-0505.cloudflareaccess.com",
+        "ACCESS_AUD": "",
+        "R2_ENDPOINT": "",
+        "FIXTURES": "1",
+      },
+      "d1_databases": [
+        { "binding": "DB", "database_name": "strix", "database_id": "", "migrations_dir": "migrations" },
+      ],
+      "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "strix" }],
+      "ai": { "binding": "AI", "remote": true },
+      "media": { "binding": "MEDIA", "remote": true },
+      "queues": {
+        "producers": [{ "binding": "CLASSIFY", "queue": "strix-classify" }],
+        "consumers": [
+          {
+            "queue": "strix-classify",
+            "max_batch_size": 1,
+            "max_retries": 3,
+            "dead_letter_queue": "strix-classify-dlq",
+          },
+        ],
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "GAME", "class_name": "GameDO" },
+          { "name": "SLICER", "class_name": "SlicerContainer" },
+        ],
+      },
     },
   },
 }
