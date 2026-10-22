@@ -74,6 +74,15 @@ describe("mergeAdjacent", () => {
     expect(merged).toEqual([event({ id: "b", clipIndex: 3, videoMs: 90_000, confidence: 80 })])
   })
 
+  it("does not collapse two events of the same clip by bridging through a neighbouring clip", () => {
+    const merged = mergeAdjacent([
+      event({ id: "a", clipIndex: 3, videoMs: 90_000 }),
+      event({ id: "b", clipIndex: 4, videoMs: 100_000 }),
+      event({ id: "d", clipIndex: 3, videoMs: 104_000 }),
+    ])
+    expect(merged.map((e) => e.id)).toEqual(["a", "d"])
+  })
+
   it("sorts by video time before merging", () => {
     const merged = mergeAdjacent([
       event({ id: "b", clipIndex: 4, videoMs: 100_000, confidence: 84 }),
