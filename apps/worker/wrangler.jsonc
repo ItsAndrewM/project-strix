@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "strix",
+  "account_id": "6624f09210327baade61004af0d9be84",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-06",
+  "routes": [{ "pattern": "strix.andamonium.dev", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+  "env": {
+    "local": {
+      "routes": [],
+    },
+  },
+}
