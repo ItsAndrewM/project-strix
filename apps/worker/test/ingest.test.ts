@@ -1,11 +1,15 @@
 import { type Clip, type Crop, type Game, socketPath } from "@strix/contracts"
-import { windowsFor } from "@strix/domain"
+import { rangesFor, windowsFor } from "@strix/domain"
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { PROBE_KEY, PROBE_TIMED_OUT, PROBE_TIMEOUT_MS } from "../src/game/ingest.ts"
 import { type Ranges, RANGE_TIMEOUT_MS } from "../src/game/progress.ts"
+import { queueRanges, runRanges } from "../src/game/ranges.ts"
 import { readGame, saveClip, saveGame } from "../src/game/store.ts"
 import { listGames } from "../src/games-index/games-index.ts"
+import { urlsFor } from "../src/r2/presign.ts"
 import { RENDITIONS } from "../src/slicer/protocol.ts"
+import type { Slicer } from "../src/slicer/slicer.ts"
 import { applySchema, asDev, clearGames, createGame, ORIGIN, postJson } from "./games.ts"
 
 const SOURCE_URL = "https://video.example.test/game.mp4"
@@ -305,5 +309,117 @@ describe("the slicing alarm", () => {
     await runDurableObjectAlarm(env.GAME.getByName(id))
     expect(await gameOf(id)).toMatchObject({ status: "slicing" })
     expect(await alarmOf(id)).not.toBeNull()
+  })
+})
+
+describe("the probing alarm", () => {
+  const probing = async (probingSince: number): Promise<string> => {
+    const { id } = await createGame()
+    await runInDurableObject(env.GAME.getByName(id), async (_instance, state) => {
+      const game = readGame(state.storage.sql)
+      if (game === undefined) throw new Error("the game was not created")
+      saveGame(state.storage.sql, { ...game, status: "probing", source: { kind: "url", url: SOURCE_URL } })
+      state.storage.kv.put(PROBE_KEY, { id: "stuck", probingSince })
+      await state.storage.setAlarm(Date.now() + 60_000)
+    })
+    return id
+  }
+
+  const alarmOf = (id: string) =>
+    runInDurableObject(env.GAME.getByName(id), (_instance, state) => state.storage.getAlarm())
+
+  it("arms a deadline for the probe when the source is set", async () => {
+    const before = Date.now()
+    const id = await probed()
+    expect(await alarmOf(id)).toBeGreaterThanOrEqual(before + PROBE_TIMEOUT_MS)
+  })
+
+  it("fails a game still probing past the deadline", async () => {
+    const id = await probing(Date.now() - PROBE_TIMEOUT_MS - 1_000)
+
+    expect(await runDurableObjectAlarm(env.GAME.getByName(id))).toBe(true)
+    expect(await gameOf(id)).toMatchObject({ status: "failed", failure: PROBE_TIMED_OUT })
+    expect(await indexedGame(id)).toMatchObject({ status: "failed", failure: PROBE_TIMED_OUT })
+  })
+
+  it("keeps a probe within its deadline probing and re-arms for the deadline", async () => {
+    const probingSince = Date.now()
+    const id = await probing(probingSince)
+
+    await runDurableObjectAlarm(env.GAME.getByName(id))
+    expect(await gameOf(id)).toMatchObject({ status: "probing" })
+    expect(await alarmOf(id)).toBe(probingSince + PROBE_TIMEOUT_MS)
+  })
+
+  it("lets a game stuck probing be given its source again", async () => {
+    const id = await probing(Date.now())
+    const response = await postJson(`/api/games/${id}/source`, { url: SOURCE_URL })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: "created", durationMs: FIXTURE_DURATION_MS })
+  })
+})
+
+describe("a clip the queue refuses", () => {
+  it("is marked failed while the range records and enqueues the rest", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const id = await probed()
+    const sends = spySends().mockRejectedValueOnce(new Error("queue unavailable"))
+    await postJson(`/api/games/${id}/start`, { crop: null })
+    const game = await settled(id)
+
+    expect(game).toMatchObject({ status: "classifying", counts: { clips: FIXTURE_WINDOWS.length } })
+    expect((await clipsOf(id)).map((clip) => clip.classification)).toEqual([
+      "failed",
+      ...FIXTURE_WINDOWS.slice(1).map(() => "pending"),
+    ])
+    expect(sends).toHaveBeenCalledTimes(FIXTURE_WINDOWS.length)
+    expect(await rangesOf(id)).toEqual({ 0: { status: "done", startedAt: expect.any(Number) } })
+    expect(consoleError).toHaveBeenCalledExactlyOnceWith({
+      event: "enqueue-failed",
+      gameId: id,
+      clipIndex: 0,
+      cause: "queue unavailable",
+    })
+  })
+})
+
+describe("a window the slicer could not cut", () => {
+  it("is logged with the slicer's reason", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const id = await probed()
+    const cutsNothing: Slicer = {
+      probe: () => Promise.reject(new Error("not probed here")),
+      async slice(_req, onProgress) {
+        await onProgress({ kind: "failed", index: 1, reason: "encoder exited with 1" })
+        await onProgress({ kind: "done" })
+      },
+    }
+    await runInDurableObject(env.GAME.getByName(id), async (instance, state) => {
+      const game = readGame(state.storage.sql)
+      if (game === undefined) throw new Error("the game was not created")
+      saveGame(state.storage.sql, { ...game, status: "slicing" })
+      queueRanges(state.storage, 1, Date.now())
+      await runRanges(
+        {
+          ctx: state,
+          env,
+          gameId: id,
+          publish: async () => undefined,
+          slicer: async () => cutsNothing,
+          urls: urlsFor(env),
+          clipReady: (clip) => instance.clipReady(clip),
+        },
+        rangesFor(FIXTURE_DURATION_MS),
+      )
+    })
+
+    expect(consoleError).toHaveBeenCalledExactlyOnceWith({
+      event: "window-failed",
+      gameId: id,
+      index: 1,
+      reason: "encoder exited with 1",
+    })
+    expect(await rangesOf(id)).toEqual({ 0: { status: "done", startedAt: expect.any(Number) } })
   })
 })

@@ -7,7 +7,7 @@
  */
 import type { Clip, Rendition } from "@strix/contracts"
 import type { Range } from "@strix/domain"
-import { logRangeFailure } from "../logs.ts"
+import { logRangeFailure, logWindowFailure } from "../logs.ts"
 import type { SliceProgress, SliceRequest, SliceWindow } from "../slicer/protocol.ts"
 import type { IngestDeps } from "./ingest.ts"
 import { type RangeStatus, type Ranges, statusAfterRanges, timeOutRanges } from "./progress.ts"
@@ -80,6 +80,7 @@ const progressFor =
     if (progress.kind === "clip") {
       await deps.clipReady(clipOf(range, progress.index))
     } else if (progress.kind === "failed") {
+      logWindowFailure(deps.gameId, progress.index, progress.reason)
       markClassification(deps.ctx.storage.sql, progress.index, "failed", null, null)
       await deps.publish(["clips"])
     }

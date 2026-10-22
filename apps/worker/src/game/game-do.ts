@@ -2,17 +2,17 @@ import { type ClefResponse, type Clip, type Game, NotFound, socketPath, Unauthor
 import { DurableObject } from "cloudflare:workers"
 import type { Env } from "../env.ts"
 import { errorResponse } from "../error-response.ts"
-import { logDefect, logRefusal, routeOf } from "../logs.ts"
+import { logDefect, logEnqueueFailure, logRefusal, routeOf } from "../logs.ts"
 import { urlsFor } from "../r2/presign.ts"
 import { slicerFor } from "../slicer/slicer.ts"
 import { migrate } from "./db/migrate.ts"
 import { MIGRATIONS } from "./db/migrations.ts"
 import { type GameApi, gameApi } from "./http.ts"
-import { type IngestDeps, probeKey, setSource, start } from "./ingest.ts"
+import { checkProbe, type IngestDeps, probeKey, setSource, start } from "./ingest.ts"
 import { type Publish, publisherFor } from "./publish.ts"
 import { checkRanges } from "./ranges.ts"
 import { acceptSocket, answerClose, type Broadcast, broadcastTo, heartbeat } from "./sockets.ts"
-import { changeGame, readGame, saveClip, saveGame } from "./store.ts"
+import { changeGame, markClassification, readGame, saveClip, saveGame } from "./store.ts"
 
 const probePath = (gameId: string): string => `/api/games/${gameId}/probe.jpg`
 
@@ -54,7 +54,10 @@ export class GameDO extends DurableObject<Env> {
 
   override async alarm(): Promise<void> {
     const game = readGame(this.ctx.storage.sql)
-    if (game !== undefined) await checkRanges(this.ingestDeps(game.id))
+    if (game === undefined) return
+    const deps = this.ingestDeps(game.id)
+    await checkProbe(deps)
+    await checkRanges(deps)
   }
 
   create(game: Game): void {
@@ -66,7 +69,12 @@ export class GameDO extends DurableObject<Env> {
     const game = readGame(sql)
     if (game === undefined) throw new NotFound()
     saveClip(sql, clip)
-    await this.env.CLASSIFY.send({ gameId: game.id, clipIndex: clip.index, pass: 1 })
+    try {
+      await this.env.CLASSIFY.send({ gameId: game.id, clipIndex: clip.index, pass: 1 })
+    } catch (cause) {
+      logEnqueueFailure(game.id, clip.index, cause)
+      markClassification(sql, clip.index, "failed", null, null)
+    }
     changeGame(sql, (current) => current)
     await this.publish(["clips", "game"])
   }

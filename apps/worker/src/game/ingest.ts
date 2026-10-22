@@ -1,6 +1,9 @@
 /**
  * Ingest: a game's source is probed within the request, so the answer already carries the duration (or the failure).
- * Starting queues every range and returns while the ranges slice in the background, six at a time (see ranges.ts).
+ * Each probe is an attempt recorded under `probe` in DO KV with an alarm at its deadline: a probe that hangs, or dies
+ * with an evicted DO, is failed by the alarm, and only the attempt still recorded may settle the game, so a late probe
+ * never overwrites a newer source or a timed-out game. Starting queues every range and returns while the ranges slice
+ * in the background, six at a time (see ranges.ts).
  */
 import { type Clip, type Crop, type Game, type GameStatus, InvalidInput, NotFound } from "@strix/contracts"
 import { rangesFor } from "@strix/domain"
@@ -22,9 +25,18 @@ export interface IngestDeps {
   readonly clipReady: (clip: Clip) => Promise<void>
 }
 
+export interface ProbeAttempt {
+  readonly id: string
+  readonly probingSince: number
+}
+
+export const PROBE_KEY = "probe"
+export const PROBE_TIMEOUT_MS = 5 * 60_000
+export const PROBE_TIMED_OUT = "probe timed out"
+
 const PROBE_FRAME_AT_MS = 300_000
 
-const SOURCE_SETTABLE: ReadonlySet<GameStatus> = new Set(["created", "failed"])
+const SOURCE_SETTABLE: ReadonlySet<GameStatus> = new Set(["created", "probing", "failed"])
 
 export const probeKey = (gameId: string): string => `thumbs/${gameId}/probe.jpg`
 
@@ -43,34 +55,60 @@ const existingGame = (sql: SqlStorage): Game => {
 
 const bytesOf = (base64: string): Uint8Array => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
 
-const probe = async (deps: IngestDeps, source: string): Promise<Game> => {
-  const sql = deps.ctx.storage.sql
+const isCurrent = (storage: DurableObjectStorage, attempt: ProbeAttempt): boolean =>
+  readGame(storage.sql)?.status === "probing" && storage.kv.get<ProbeAttempt>(PROBE_KEY)?.id === attempt.id
+
+const settleProbe = (storage: DurableObjectStorage, attempt: ProbeAttempt, change: (game: Game) => Game): Game => {
+  if (!isCurrent(storage, attempt)) return existingGame(storage.sql)
+  storage.kv.delete(PROBE_KEY)
+  return changeGame(storage.sql, change)
+}
+
+const probe = async (deps: IngestDeps, source: string, attempt: ProbeAttempt): Promise<Game> => {
+  const { storage } = deps.ctx
   try {
     const result = await (await deps.slicer(0)).probe({ source, frameAtMs: PROBE_FRAME_AT_MS })
+    if (!isCurrent(storage, attempt)) return existingGame(storage.sql)
     await deps.env.BUCKET.put(probeKey(deps.gameId), bytesOf(result.frameJpegBase64), {
       httpMetadata: { contentType: "image/jpeg" },
     })
-    return changeGame(sql, (game) => ({ ...game, status: "created", durationMs: result.durationMs }))
+    return settleProbe(storage, attempt, (game) => ({ ...game, status: "created", durationMs: result.durationMs }))
   } catch (cause) {
-    return changeGame(sql, (game) => ({ ...game, status: "failed", failure: messageOf(cause) }))
+    return settleProbe(storage, attempt, (game) => ({ ...game, status: "failed", failure: messageOf(cause) }))
   }
 }
 
 export const setSource = async (deps: IngestDeps, url: string): Promise<Game> => {
   if (!isWebUrl(url)) throw invalid("url")
-  const sql = deps.ctx.storage.sql
-  if (!SOURCE_SETTABLE.has(existingGame(sql).status)) throw invalid("status")
-  changeGame(sql, (game) => ({
+  const { storage } = deps.ctx
+  if (!SOURCE_SETTABLE.has(existingGame(storage.sql).status)) throw invalid("status")
+  const attempt: ProbeAttempt = { id: crypto.randomUUID(), probingSince: Date.now() }
+  storage.kv.put(PROBE_KEY, attempt)
+  changeGame(storage.sql, (game) => ({
     ...game,
     status: "probing",
     failure: null,
     source: { kind: "url", url },
     durationMs: null,
   }))
+  await storage.setAlarm(attempt.probingSince + PROBE_TIMEOUT_MS)
   await deps.publish(["game"])
-  const probed = await probe(deps, url)
+  const probed = await probe(deps, url, attempt)
   await deps.publish(["game"])
   return probed
+}
+
+export const checkProbe = async (deps: IngestDeps): Promise<void> => {
+  const { storage } = deps.ctx
+  if (readGame(storage.sql)?.status !== "probing") return
+  const attempt = storage.kv.get<ProbeAttempt>(PROBE_KEY)
+  if (attempt !== undefined && Date.now() - attempt.probingSince < PROBE_TIMEOUT_MS) {
+    await storage.setAlarm(attempt.probingSince + PROBE_TIMEOUT_MS)
+    return
+  }
+  storage.kv.delete(PROBE_KEY)
+  changeGame(storage.sql, (game) => ({ ...game, status: "failed", failure: PROBE_TIMED_OUT }))
+  await deps.publish(["game"])
 }
 
 export const start = async (deps: IngestDeps, crop: Crop | null): Promise<Game> => {
