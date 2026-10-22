@@ -106,6 +106,17 @@ describe("the game store", () => {
     expect(clip).toEqual(sliced)
   })
 
+  it("keeps a clip's classification when the slicer saves it again", async () => {
+    const resliced: Clip = { ...clipAt(2), durationMs: 9_500, renditions: ["view"] }
+    const clip = await inGame("store-reslice", (sql) => {
+      saveClip(sql, clipAt(2))
+      markClassification(sql, 2, "done", "stoppage", 81)
+      saveClip(sql, resliced)
+      return readClip(sql, 2)
+    })
+    expect(clip).toEqual({ ...resliced, classification: "done", state: "stoppage", stateConfidence: 81 })
+  })
+
   it("marks a clip's classification and game state", async () => {
     const { marked, missing } = await inGame("store-mark", (sql) => {
       saveClip(sql, clipAt(0))
@@ -142,6 +153,17 @@ describe("the game store", () => {
     })
     expect(events.map(({ id }) => id).toSorted()).toEqual(["accepted", "fresh", "other"])
     expect(events.find(({ id }) => id === "fresh")).toEqual(fresh)
+  })
+
+  it("keeps an accepted event when a replacement reuses its id", async () => {
+    const accepted = eventOf("same", 1, "accepted", [])
+    const colliding = { ...eventOf("same", 1, "draft", ["time"]), videoMs: 14_500, confidence: 30 }
+    const events = await inGameStorage("store-replace-collision", (storage) => {
+      saveEvents(storage.sql, [accepted])
+      replaceEventsForClip(storage, 1, [colliding])
+      return readEvents(storage.sql)
+    })
+    expect(events).toEqual([accepted])
   })
 
   it("reads events ordered by video time", async () => {

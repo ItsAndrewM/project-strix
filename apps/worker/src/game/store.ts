@@ -71,10 +71,7 @@ export const saveClip = (sql: SqlStorage, clip: Clip): void => {
      ON CONFLICT(idx) DO UPDATE SET
        start_ms = excluded.start_ms,
        duration_ms = excluded.duration_ms,
-       renditions = excluded.renditions,
-       state = excluded.state,
-       state_confidence = excluded.state_confidence,
-       classification = excluded.classification`,
+       renditions = excluded.renditions`,
     clip.index,
     clip.startMs,
     clip.durationMs,
@@ -132,24 +129,26 @@ export const readAnswers = (sql: SqlStorage, clipIndex: number): ReadonlyArray<A
     .toArray()
     .map(({ pass, window, json }) => ({ pass, window, response: decodeResponse(json) }))
 
-export const saveEvents = (sql: SqlStorage, events: ReadonlyArray<GameEvent>): void => {
+const INSERT_EVENT = "INSERT INTO events (id, clip_idx, video_ms, status, needs_count, json) VALUES (?, ?, ?, ?, ?, ?)"
+
+const UPSERT_EVENT = `${INSERT_EVENT}
+  ON CONFLICT(id) DO UPDATE SET
+    clip_idx = excluded.clip_idx,
+    video_ms = excluded.video_ms,
+    status = excluded.status,
+    needs_count = excluded.needs_count,
+    json = excluded.json`
+
+const INSERT_EVENT_UNLESS_PRESENT = `${INSERT_EVENT} ON CONFLICT(id) DO NOTHING`
+
+const writeEvents = (sql: SqlStorage, statement: string, events: ReadonlyArray<GameEvent>): void => {
   for (const event of events) {
-    sql.exec(
-      `INSERT INTO events (id, clip_idx, video_ms, status, needs_count, json) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         clip_idx = excluded.clip_idx,
-         video_ms = excluded.video_ms,
-         status = excluded.status,
-         needs_count = excluded.needs_count,
-         json = excluded.json`,
-      event.id,
-      event.clipIndex,
-      event.videoMs,
-      event.status,
-      event.needs.length,
-      encodeEvent(event),
-    )
+    sql.exec(statement, event.id, event.clipIndex, event.videoMs, event.status, event.needs.length, encodeEvent(event))
   }
+}
+
+export const saveEvents = (sql: SqlStorage, events: ReadonlyArray<GameEvent>): void => {
+  writeEvents(sql, UPSERT_EVENT, events)
 }
 
 export const replaceEventsForClip = (
@@ -159,7 +158,7 @@ export const replaceEventsForClip = (
 ): void => {
   storage.transactionSync(() => {
     storage.sql.exec("DELETE FROM events WHERE clip_idx = ? AND status IN ('auto', 'draft', 'discarded')", clipIndex)
-    saveEvents(storage.sql, events)
+    writeEvents(storage.sql, INSERT_EVENT_UNLESS_PRESENT, events)
   })
 }
 
