@@ -9,7 +9,7 @@ import { NotFound, ServiceUnavailable } from "@strix/contracts"
 import probeFixture from "../../fixtures/probe.json"
 import type { Env } from "../env.ts"
 import { errorResponse } from "../error-response.ts"
-import { logThumbFailure, messageOf } from "../logs.ts"
+import { logThumbFailure, logViewFailure, messageOf } from "../logs.ts"
 import { bytesOf } from "./ingest.ts"
 
 const MEDIA_CACHE = "private, max-age=3600"
@@ -75,7 +75,7 @@ const getView = async (env: Env, key: string, range: Headers | null): Promise<R2
   }
 }
 
-export const serveView = async (env: Env, gameId: string, index: number, request: Request): Promise<Response> => {
+const respondToView = async (env: Env, gameId: string, index: number, request: Request): Promise<Response> => {
   const byteRange = byteRangeOf(request)
   const object = await getView(env, viewKey(gameId, index), byteRange === null ? null : request.headers)
   if (object === null) return errorResponse(new NotFound())
@@ -84,6 +84,15 @@ export const serveView = async (env: Env, gameId: string, index: number, request
   if (!startsPastEnd(byteRange, object.size)) return partial(object)
   await object.body.cancel()
   return notSatisfiable(object.size)
+}
+
+export const serveView = async (env: Env, gameId: string, index: number, request: Request): Promise<Response> => {
+  try {
+    return await respondToView(env, gameId, index, request)
+  } catch (cause) {
+    logViewFailure(gameId, index, cause)
+    return errorResponse(new ServiceUnavailable())
+  }
 }
 
 const frameFromView = async (env: Env, view: ReadableStream<Uint8Array>): Promise<Uint8Array> => {

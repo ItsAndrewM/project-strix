@@ -49,6 +49,10 @@ export const logThumbFailure = (gameId: string, index: number, status: number | 
   console.error({ event: "thumb-failed", gameId, index, status, cause: messageOf(cause) })
 }
 
+export const logViewFailure = (gameId: string, index: number, cause: unknown): void => {
+  console.error({ event: "view-failed", gameId, index, cause: messageOf(cause) })
+}
+
 export const logClassificationFailure = (gameId: string, clipIndex: number, reason: string): void => {
   console.error({ event: "classification-failed", gameId, clipIndex, reason })
 }

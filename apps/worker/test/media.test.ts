@@ -128,12 +128,21 @@ describe("GET /api/games/:id/clips/:index/view.mp4", () => {
     expect(response.headers.get("content-range")).toBe(`bytes */${size}`)
   })
 
-  it("rethrows any other R2 failure rather than answering 416", async () => {
+  it("answers 503 and logs it when R2 fails for any other reason", async () => {
     const id = await startedGame()
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     vi.spyOn(env.BUCKET, "get").mockRejectedValueOnce(new Error("get: internal error (10001)"))
     const request = new Request(`${ORIGIN}/view`, { headers: { range: "bytes=0-9" } })
 
-    await expect(serveView(env, id, 0, request)).rejects.toThrow("internal error")
+    const response = await serveView(env, id, 0, request)
+
+    expect(response.status).toBe(503)
+    expect(consoleError).toHaveBeenCalledWith({
+      event: "view-failed",
+      gameId: id,
+      index: 0,
+      cause: "get: internal error (10001)",
+    })
   })
 
   it("answers 416 to a range past the end of the clip", async () => {
