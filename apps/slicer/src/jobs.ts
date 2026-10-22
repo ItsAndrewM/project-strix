@@ -74,6 +74,7 @@ const upload = async (window: SliceWindow, outDir: string): Promise<string | nul
       body,
       headers: { "content-type": "video/mp4" },
     })
+    await response.body?.cancel()
     if (!response.ok) return `upload of ${rendition} failed with ${response.status}`
   }
   return null

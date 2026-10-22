@@ -29,6 +29,8 @@ describe("decodeSliceRequest", () => {
     ["a missing source", { source: null }],
     ["a crop missing its height", { crop: { x: 0, y: 0, width: 400 } }],
     ["a fractional crop", { crop: { x: 0.5, y: 0, width: 400, height: 60 } }],
+    ["a crop with no width", { crop: { x: 0, y: 0, width: 0, height: 60 } }],
+    ["a crop with no height", { crop: { x: 0, y: 0, width: 400, height: 0 } }],
     ["windows that are not an array", { windows: "none" }],
     [
       "a window missing the view put",

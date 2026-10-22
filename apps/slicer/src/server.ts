@@ -63,9 +63,9 @@ const ROUTES = new Map([
 ])
 
 const server = createServer((req, res) => {
-  const route = `${req.method} ${new URL(req.url ?? "/", "http://slicer").pathname}`
+  const route = `${req.method} ${URL.parse(req.url ?? "/", "http://slicer")?.pathname}`
   const handler = ROUTES.get(route)
-  if (handler === undefined) return sendJson(res, 404, { error: `no route for ${route}` })
+  if (handler === undefined) return sendJson(res, 404, { error: `no route for ${req.method} ${req.url}` })
   handler(req, res).catch((cause) => {
     if (res.headersSent) res.end()
     else sendJson(res, 500, { error: reasonOf(cause) })

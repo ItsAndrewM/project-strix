@@ -64,7 +64,7 @@ export function countOf(value: JsonValue | undefined): number | null {
 function decodeCrop(value: JsonValue | undefined): Crop | null {
   if (!isJsonObject(value)) return null
   const [x, y, width, height] = [countOf(value.x), countOf(value.y), countOf(value.width), countOf(value.height)]
-  if (x === null || y === null || width === null || height === null) return null
+  if (x === null || y === null || !width || !height) return null
   return { x, y, width, height }
 }
 
