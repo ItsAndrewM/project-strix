@@ -146,6 +146,21 @@ describe("GameDO.answerReady", () => {
     expect(game).toMatchObject({ status: "ready", counts: { classified: 0, events: 0 } })
   })
 
+  it("derives the goal of an answer whose shots are malformed", async () => {
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+    const id = await classifying(1)
+    await env.GAME.getByName(id).answerReady(0, 1, 0, withoutAnswer(GOAL, "shots_home"))
+
+    const { clips, events } = await stored(id)
+    expect(clips.map((clip) => clip.classification)).toEqual(["done"])
+    expect(goalsOf(events)).toEqual([{ clipIndex: 0, videoMs: 0, status: "auto" }])
+    expect(consoleWarn).toHaveBeenCalledExactlyOnceWith({
+      event: "shots-unreadable",
+      id: "shots_home",
+      cause: "Clef did not answer shots_home",
+    })
+  })
+
   it("keeps the game classifying while a clip is still pending", async () => {
     const id = await classifying(2)
     await env.GAME.getByName(id).answerReady(0, 1, 0, QUIET)

@@ -1,6 +1,6 @@
 import { Exit, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { DEFAULT_THRESHOLDS, NewGame, TIMING_PRESETS } from "../src/index.ts"
+import { Crop, DEFAULT_THRESHOLDS, NewGame, TIMING_PRESETS } from "../src/index.ts"
 
 const codec = Schema.toCodecJson(NewGame)
 const decode = Schema.decodeUnknownExit(codec)
@@ -37,6 +37,22 @@ describe("NewGame", () => {
   it("rejects a threshold above 100", () => {
     const withThresholds = { ...newGame([7]), thresholds: { ...DEFAULT_THRESHOLDS, scorer: 101 } }
     expect(Exit.isFailure(decode(withThresholds))).toBe(true)
+  })
+})
+
+describe("Crop", () => {
+  const decodeCrop = Schema.decodeUnknownExit(Crop)
+
+  it("accepts a one-pixel box at the origin", () => {
+    expect(Exit.isSuccess(decodeCrop({ x: 0, y: 0, width: 1, height: 1 }))).toBe(true)
+  })
+
+  it.each([
+    ["a zero width", { x: 0, y: 0, width: 0, height: 60 }],
+    ["a zero height", { x: 0, y: 0, width: 400, height: 0 }],
+    ["a negative x", { x: -1, y: 0, width: 400, height: 60 }],
+  ])("rejects %s", (_, crop) => {
+    expect(Exit.isFailure(decodeCrop(crop))).toBe(true)
   })
 })
 

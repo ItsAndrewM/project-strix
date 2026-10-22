@@ -2,12 +2,14 @@ import { type Clip, type Crop, type Game, socketPath } from "@strix/contracts"
 import { rangesFor, windowsFor } from "@strix/domain"
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import { PROBE_KEY, PROBE_TIMED_OUT, PROBE_TIMEOUT_MS } from "../src/game/ingest.ts"
-import { type Ranges, RANGE_TIMEOUT_MS } from "../src/game/progress.ts"
+import type { GameDO } from "../src/game/game-do.ts"
+import { type IngestDeps, PROBE_KEY, PROBE_TIMED_OUT, PROBE_TIMEOUT_MS, setSource } from "../src/game/ingest.ts"
+import { NO_CAPACITY, NO_CLIPS, type Ranges, RANGE_TIMED_OUT, RANGE_TIMEOUT_MS } from "../src/game/progress.ts"
 import { queueRanges, runRanges } from "../src/game/ranges.ts"
 import { readGame, saveClip, saveGame } from "../src/game/store.ts"
 import { listGames } from "../src/games-index/games-index.ts"
 import { urlsFor } from "../src/r2/presign.ts"
+import { fixtureSlicer } from "../src/slicer/fixture-slicer.ts"
 import { RENDITIONS } from "../src/slicer/protocol.ts"
 import type { Slicer } from "../src/slicer/slicer.ts"
 import { applySchema, asDev, clearGames, createGame, ORIGIN, postJson, SENT } from "./games.ts"
@@ -75,6 +77,36 @@ const listen = async (id: string): Promise<ReadonlyArray<string>> => {
 
 const changed = (...kinds: ReadonlyArray<string>) => JSON.stringify({ changed: kinds })
 
+const unsliced = ({ index, startMs, durationMs }: { index: number; startMs: number; durationMs: number }): Clip => ({
+  index,
+  startMs,
+  durationMs,
+  renditions: [],
+  state: null,
+  stateConfidence: null,
+  classification: "failed",
+})
+
+const depsWith = (instance: GameDO, state: DurableObjectState, gameId: string, slicer: Slicer): IngestDeps => ({
+  ctx: state,
+  env,
+  gameId,
+  publish: async () => undefined,
+  slicer: async () => slicer,
+  urls: urlsFor(env),
+  clipReady: (clip) => instance.clipReady(clip),
+})
+
+const slicedBy = async (id: string, slicer: Slicer): Promise<void> => {
+  await runInDurableObject(env.GAME.getByName(id), async (instance, state) => {
+    const game = readGame(state.storage.sql)
+    if (game === undefined) throw new Error("the game was not created")
+    saveGame(state.storage.sql, { ...game, status: "slicing" })
+    queueRanges(state.storage, 1, Date.now())
+    await runRanges(depsWith(instance, state, id, slicer), rangesFor(FIXTURE_DURATION_MS))
+  })
+}
+
 beforeAll(async () => {
   await applySchema(env.DB)
 })
@@ -110,7 +142,7 @@ describe("POST /api/games/:id/source", () => {
 
     expect(response.status).toBe(200)
     expect(response.headers.get("content-type")).toBe("image/jpeg")
-    expect(response.headers.get("cache-control")).toBe("private, max-age=3600")
+    expect(response.headers.get("cache-control")).toBe("private, no-store")
     const jpeg = new Uint8Array(await response.arrayBuffer())
     expect([jpeg[0], jpeg[1], jpeg.at(-2), jpeg.at(-1)]).toEqual([0xff, 0xd8, 0xff, 0xd9])
     expect(await env.BUCKET.head(`thumbs/${id}/probe.jpg`)).not.toBeNull()
@@ -215,10 +247,23 @@ describe("POST /api/games/:id/start", () => {
     const { id, sends } = await started()
     const game = await settled(id)
 
-    expect(game).toMatchObject({ status: "classifying", failure: null, counts: { clips: 1 } })
-    expect((await clipsOf(id)).map((clip) => [clip.index, clip.classification])).toEqual([[0, "pending"]])
+    expect(game).toMatchObject({
+      status: "classifying",
+      failure: "2 windows could not be sliced",
+      counts: { clips: FIXTURE_WINDOWS.length, classified: 0 },
+    })
+    const clips = await clipsOf(id)
+    expect(clips.map((clip) => [clip.index, clip.classification, clip.renditions.length])).toEqual([
+      [0, "pending", 3],
+      [1, "failed", 0],
+      [2, "failed", 0],
+    ])
+    expect(clips.slice(1)).toEqual(FIXTURE_WINDOWS.slice(1).map(unsliced))
     expect(sends).toHaveBeenCalledExactlyOnceWith({ gameId: id, clipIndex: 0, pass: 1 })
-    expect(await rangesOf(id)).toEqual({ 0: { status: "failed", startedAt: expect.any(Number) } })
+    expect(await rangesOf(id)).toEqual({
+      0: { status: "failed", startedAt: expect.any(Number), reason: "fixture slice failed after 1 clips" },
+    })
+    expect(await indexedGame(id)).toMatchObject({ failure: "2 windows could not be sliced" })
     expect(consoleError).toHaveBeenCalledExactlyOnceWith({
       event: "range-failed",
       gameId: id,
@@ -233,8 +278,17 @@ describe("POST /api/games/:id/start", () => {
     const { id } = await started()
     const game = await settled(id)
 
-    expect(game).toMatchObject({ status: "failed", failure: expect.stringContaining("no clips"), counts: { clips: 0 } })
+    expect(game).toMatchObject({ status: "failed", failure: NO_CLIPS, counts: { clips: FIXTURE_WINDOWS.length } })
+    expect(await clipsOf(id)).toEqual(FIXTURE_WINDOWS.map(unsliced))
     expect(await indexedGame(id)).toMatchObject({ status: "failed" })
+  })
+
+  it("answers 400 to a crop with no width", async () => {
+    const id = await probed()
+    const response = await postJson(`/api/games/${id}/start`, { crop: { x: 0, y: 0, width: 0, height: 60 } })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ _tag: "InvalidInput" })
+    expect(await gameOf(id)).toMatchObject({ status: "created" })
   })
 
   it.each([
@@ -279,20 +333,16 @@ describe("the slicing alarm", () => {
   const alarmOf = (id: string) =>
     runInDurableObject(env.GAME.getByName(id), (_instance, state) => state.storage.getAlarm())
 
-  it("fails a range running for over 30 minutes and settles the game on its clips", async () => {
+  it("fails a range running for over 30 minutes, records its unsliced windows and settles on its clips", async () => {
     const stalled = Date.now() - RANGE_TIMEOUT_MS - 1_000
-    const id = await slicing(
-      { 0: { status: "done", startedAt: stalled }, 1: { status: "running", startedAt: stalled } },
-      1,
-    )
+    const id = await slicing({ 0: { status: "running", startedAt: stalled } }, 1)
 
     expect(await runDurableObjectAlarm(env.GAME.getByName(id))).toBe(true)
-    expect(await rangesOf(id)).toEqual({
-      0: { status: "done", startedAt: stalled },
-      1: { status: "failed", startedAt: stalled },
-    })
-    expect(await gameOf(id)).toMatchObject({ status: "classifying" })
-    expect(await indexedGame(id)).toMatchObject({ status: "classifying" })
+    expect(await rangesOf(id)).toEqual({ 0: { status: "failed", startedAt: stalled, reason: RANGE_TIMED_OUT } })
+    expect((await clipsOf(id)).slice(1)).toEqual(FIXTURE_WINDOWS.slice(1).map(unsliced))
+    const failure = "2 windows could not be sliced"
+    expect(await gameOf(id)).toMatchObject({ status: "classifying", failure, counts: { clips: 3 } })
+    expect(await indexedGame(id)).toMatchObject({ status: "classifying", failure })
     expect(await alarmOf(id)).toBeNull()
   })
 
@@ -301,7 +351,7 @@ describe("the slicing alarm", () => {
     const id = await slicing({ 0: { status: "running", startedAt: stalled } }, 0)
 
     await runDurableObjectAlarm(env.GAME.getByName(id))
-    expect(await gameOf(id)).toMatchObject({ status: "failed", failure: expect.stringContaining("no clips") })
+    expect(await gameOf(id)).toMatchObject({ status: "failed", failure: NO_CLIPS })
   })
 
   it("keeps slicing and re-arms while a range is still within its time", async () => {
@@ -386,34 +436,24 @@ describe("a clip the queue refuses", () => {
 })
 
 describe("a window the slicer could not cut", () => {
-  it("is logged with the slicer's reason", async () => {
+  it("is logged with the slicer's reason and recorded as an unsliced clip", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    spySends()
     const id = await probed()
-    const cutsNothing: Slicer = {
+    const fixture = fixtureSlicer(env.BUCKET)
+    const skipsTheMiddle: Slicer = {
       probe: () => Promise.reject(new Error("not probed here")),
-      async slice(_req, onProgress) {
-        await onProgress({ kind: "failed", index: 1, reason: "encoder exited with 1" })
-        await onProgress({ kind: "done" })
+      async slice(req, onProgress) {
+        const [first, middle, last] = req.windows
+        if (first === undefined || middle === undefined || last === undefined) throw new Error("expected 3 windows")
+        await fixture.slice({ ...req, windows: [first] }, async (progress) => {
+          if (progress.kind !== "done") await onProgress(progress)
+        })
+        await onProgress({ kind: "failed", index: middle.index, reason: "encoder exited with 1" })
+        await fixture.slice({ ...req, windows: [last] }, onProgress)
       },
     }
-    await runInDurableObject(env.GAME.getByName(id), async (instance, state) => {
-      const game = readGame(state.storage.sql)
-      if (game === undefined) throw new Error("the game was not created")
-      saveGame(state.storage.sql, { ...game, status: "slicing" })
-      queueRanges(state.storage, 1, Date.now())
-      await runRanges(
-        {
-          ctx: state,
-          env,
-          gameId: id,
-          publish: async () => undefined,
-          slicer: async () => cutsNothing,
-          urls: urlsFor(env),
-          clipReady: (clip) => instance.clipReady(clip),
-        },
-        rangesFor(FIXTURE_DURATION_MS),
-      )
-    })
+    await slicedBy(id, skipsTheMiddle)
 
     expect(consoleError).toHaveBeenCalledExactlyOnceWith({
       event: "window-failed",
@@ -422,5 +462,58 @@ describe("a window the slicer could not cut", () => {
       reason: "encoder exited with 1",
     })
     expect(await rangesOf(id)).toEqual({ 0: { status: "done", startedAt: expect.any(Number) } })
+    const clips = await clipsOf(id)
+    expect(clips.map((clip) => [clip.index, clip.classification])).toEqual([
+      [0, "pending"],
+      [1, "failed"],
+      [2, "pending"],
+    ])
+    expect(clips[1]).toEqual(unsliced({ index: 1, startMs: 25_000, durationMs: 30_000 }))
+    expect(await gameOf(id)).toMatchObject({ status: "classifying", failure: "1 window could not be sliced" })
+  })
+})
+
+describe("a slicer with no capacity", () => {
+  it("fails the game asking to try again later", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const id = await probed()
+    const full: Slicer = {
+      probe: () => Promise.reject(new Error("not probed here")),
+      slice: () => Promise.reject(new Error("slicer /slice answered 503: There is no Container instance available")),
+    }
+    await slicedBy(id, full)
+
+    expect(await rangesOf(id)).toEqual({ 0: { status: "failed", startedAt: expect.any(Number), reason: NO_CAPACITY } })
+    expect(await gameOf(id)).toMatchObject({
+      status: "failed",
+      failure: "no slicer capacity: try again in a few minutes",
+    })
+    expect(consoleError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ event: "range-failed", gameId: id }))
+  })
+})
+
+describe("a source shorter than one window", () => {
+  const SHORT_MS = 15_300
+
+  it("probes to created and slices into a single clip", async () => {
+    const { id } = await createGame()
+    const sends = spySends()
+    const fixture = fixtureSlicer(env.BUCKET)
+    const short: Slicer = {
+      probe: async (req) => ({ ...(await fixture.probe(req)), durationMs: SHORT_MS }),
+      slice: (req, onProgress) => fixture.slice(req, onProgress),
+    }
+    const probedGame = await runInDurableObject(env.GAME.getByName(id), (instance, state) =>
+      setSource(depsWith(instance, state, id, short), SOURCE_URL),
+    )
+    expect(probedGame).toMatchObject({ status: "created", failure: null, durationMs: SHORT_MS })
+
+    expect((await postJson(`/api/games/${id}/start`, { crop: null })).status).toBe(200)
+    const game = await settled(id)
+    expect(game).toMatchObject({ status: "classifying", failure: null, counts: { clips: 1 } })
+    expect((await clipsOf(id)).map(({ index, startMs, durationMs }) => ({ index, startMs, durationMs }))).toEqual([
+      { index: 0, startMs: 0, durationMs: SHORT_MS },
+    ])
+    expect(sends).toHaveBeenCalledExactlyOnceWith({ gameId: id, clipIndex: 0, pass: 1 })
   })
 })

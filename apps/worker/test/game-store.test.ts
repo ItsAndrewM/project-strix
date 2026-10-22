@@ -15,6 +15,8 @@ import {
   saveClip,
   saveEvents,
   saveGame,
+  saveUnslicedWindow,
+  sliceCountsOf,
 } from "../src/game/store.ts"
 import { gameAt } from "./games.ts"
 
@@ -116,6 +118,30 @@ describe("the game store", () => {
       return readClip(sql, 2)
     })
     expect(clip).toEqual({ ...resliced, classification: "done", state: "stoppage", stateConfidence: 81 })
+  })
+
+  it("records an unsliced window once, never over a sliced clip, and counts both kinds", async () => {
+    const { clips, written, counts } = await inGame("store-unsliced", (sql) => {
+      saveClip(sql, clipAt(0))
+      const written = [
+        saveUnslicedWindow(sql, { index: 0, startMs: 0, durationMs: 10_000 }),
+        saveUnslicedWindow(sql, { index: 1, startMs: 10_000, durationMs: 10_000 }),
+        saveUnslicedWindow(sql, { index: 1, startMs: 10_000, durationMs: 10_000 }),
+      ]
+      return { clips: readClips(sql), written, counts: sliceCountsOf(sql) }
+    })
+    expect(written).toEqual([false, true, false])
+    expect(clips).toEqual([clipAt(0), { ...clipAt(1), renditions: [], classification: "failed" }])
+    expect(counts).toEqual({ sliced: 1, unsliced: 1 })
+  })
+
+  it("turns an unsliced window into a pending clip when a late slice records it", async () => {
+    const clip = await inGame("store-late-slice", (sql) => {
+      saveUnslicedWindow(sql, { index: 2, startMs: 20_000, durationMs: 10_000 })
+      saveClip(sql, clipAt(2))
+      return readClip(sql, 2)
+    })
+    expect(clip).toEqual(clipAt(2))
   })
 
   it("marks a clip's classification and game state", async () => {

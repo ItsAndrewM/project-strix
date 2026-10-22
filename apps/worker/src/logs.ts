@@ -56,3 +56,7 @@ export const logViewFailure = (gameId: string, index: number, cause: unknown): v
 export const logClassificationFailure = (gameId: string, clipIndex: number, reason: string): void => {
   console.error({ event: "classification-failed", gameId, clipIndex, reason })
 }
+
+export const logShotsUnreadable = (id: string, cause: string): void => {
+  console.warn({ event: "shots-unreadable", id, cause })
+}

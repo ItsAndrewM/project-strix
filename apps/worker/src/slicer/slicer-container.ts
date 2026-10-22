@@ -3,19 +3,36 @@ import type { Env } from "../env.ts"
 import {
   decodeProbeResult,
   decodeSliceProgress,
+  isJsonObject,
   type JsonValue,
   type ProbeRequest,
   type SliceProgress,
   type SliceRequest,
+  textOf,
 } from "./protocol.ts"
 import type { Slicer } from "./slicer.ts"
 
 export class SlicerContainer extends Container<Env> {
   override defaultPort = 8080
-  override sleepAfter = "10m"
+  override sleepAfter = "2m"
 }
 
 type Send = (request: Request) => Promise<Response>
+
+const parsed = (text: string): JsonValue => {
+  try {
+    const value: JsonValue = JSON.parse(text)
+    return value
+  } catch {
+    return null
+  }
+}
+
+const errorOf = (body: string): string => {
+  const value = parsed(body)
+  const error = isJsonObject(value) ? textOf(value.error) : null
+  return error ?? body
+}
 
 const post = async (send: Send, path: string, body: ProbeRequest | SliceRequest): Promise<Response> => {
   const response = await send(
@@ -25,17 +42,8 @@ const post = async (send: Send, path: string, body: ProbeRequest | SliceRequest)
       headers: { "content-type": "application/json" },
     }),
   )
-  if (!response.ok) throw new Error(`slicer ${path} answered ${response.status}: ${await response.text()}`)
+  if (!response.ok) throw new Error(`slicer ${path} answered ${response.status}: ${errorOf(await response.text())}`)
   return response
-}
-
-const parsed = (text: string): JsonValue => {
-  try {
-    const value: JsonValue = JSON.parse(text)
-    return value
-  } catch {
-    return null
-  }
 }
 
 const progressOf = (line: string): SliceProgress => {

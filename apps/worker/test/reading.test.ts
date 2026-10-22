@@ -1,5 +1,5 @@
 import type { ClefAnswer } from "@strix/contracts"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { PASS_ONE_IDS, type PassOneId } from "../src/classify/questions.ts"
 import { readPassOne, ReadingError } from "../src/classify/reading.ts"
 import { GOAL, GOALIE_CHANGE, PENALTY, QUIET, withAnswer, withoutAnswer } from "./answers.ts"
@@ -27,6 +27,15 @@ const WRONG_TYPE = {
   goalie_change: CHOICE,
   goalie_change_team: SCORE,
 } satisfies Record<PassOneId, ClefAnswer>
+
+const SHOT_IDS: ReadonlyArray<"shots_home" | "shots_away"> = ["shots_home", "shots_away"]
+const FATAL_IDS = PASS_ONE_IDS.filter((id) => id !== "shots_home" && id !== "shots_away")
+
+const silenceWarnings = () => vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 const choiceOf = (probabilities: Record<string, number>, choice: string, confidence = 0.7): ClefAnswer => ({
   type: "choice",
@@ -87,13 +96,13 @@ describe("readPassOne", () => {
     expect(error.message).toContain("goal")
   })
 
-  it.each(PASS_ONE_IDS)("fails naming %s when it is missing", (id) => {
+  it.each(FATAL_IDS)("fails naming %s when it is missing", (id) => {
     const error = failureOf(() => readPassOne(withoutAnswer(GOAL, id)))
     expect(error).toBeInstanceOf(ReadingError)
     expect(error.message).toContain(id)
   })
 
-  it.each(PASS_ONE_IDS)("fails naming %s when it has the wrong type", (id) => {
+  it.each(FATAL_IDS)("fails naming %s when it has the wrong type", (id) => {
     const error = failureOf(() => readPassOne(withAnswer(GOAL, id, WRONG_TYPE[id])))
     expect(error).toBeInstanceOf(ReadingError)
     expect(error.message).toContain(id)
@@ -124,7 +133,26 @@ describe("readPassOne", () => {
     expect(error.message).toContain("game_state")
   })
 
-  it("fails when the most likely shot level is not one of the five", () => {
+  it.each(SHOT_IDS)("reads %s as null and logs it when it is missing", (id) => {
+    const consoleWarn = silenceWarnings()
+    const reading = readPassOne(withoutAnswer(GOAL, id))
+    expect(id === "shots_home" ? reading.shotsHome : reading.shotsAway).toBeNull()
+    expect(reading.goal).toBe(0.91)
+    expect(consoleWarn).toHaveBeenCalledExactlyOnceWith({
+      event: "shots-unreadable",
+      id,
+      cause: `Clef did not answer ${id}`,
+    })
+  })
+
+  it.each(SHOT_IDS)("reads %s as null when it has the wrong type", (id) => {
+    silenceWarnings()
+    const reading = readPassOne(withAnswer(GOAL, id, WRONG_TYPE[id]))
+    expect(id === "shots_home" ? reading.shotsHome : reading.shotsAway).toBeNull()
+  })
+
+  it("reads a shot level that is not one of the five as null, keeping the goal", () => {
+    const consoleWarn = silenceWarnings()
     const answer: ClefAnswer = {
       type: "score",
       score: 7,
@@ -132,9 +160,13 @@ describe("readPassOne", () => {
       probabilities: { 0: 0.1, 7: 0.9 },
       confidence: 0.9,
     }
-    const error = failureOf(() => readPassOne(withAnswer(GOAL, "shots_away", answer)))
-    expect(error).toBeInstanceOf(ReadingError)
-    expect(error.message).toContain("shots_away")
+    const reading = readPassOne(withAnswer(GOAL, "shots_away", answer))
+    expect(reading).toMatchObject({ goal: 0.91, goalTeam: { team: "away" }, shotsHome: { count: 1 }, shotsAway: null })
+    expect(consoleWarn).toHaveBeenCalledExactlyOnceWith({
+      event: "shots-unreadable",
+      id: "shots_away",
+      cause: expect.stringContaining("shots_away"),
+    })
   })
 
   it("resolves a shot level Clef keyed by its legend label", () => {
@@ -148,7 +180,7 @@ describe("readPassOne", () => {
     expect(readPassOne(withAnswer(GOAL, "shots_home", answer)).shotsHome).toEqual({ count: 4, confidence: 70 })
   })
 
-  it("fails when the likeliest label matches more than one legend entry", () => {
+  it("reads shots as null when the likeliest label matches more than one legend entry", () => {
     const answer: ClefAnswer = {
       type: "score",
       score: 3,
@@ -156,9 +188,8 @@ describe("readPassOne", () => {
       probabilities: { "0": 0.1, "1": 0.1, "2": 0.1, many: 0.7 },
       confidence: 0.7,
     }
-    const error = failureOf(() => readPassOne(withAnswer(GOAL, "shots_home", answer)))
-    expect(error).toBeInstanceOf(ReadingError)
-    expect(error.message).toContain("shots_home")
+    silenceWarnings()
+    expect(readPassOne(withAnswer(GOAL, "shots_home", answer)).shotsHome).toBeNull()
   })
 
   it("fails when a probability is outside 0..1", () => {

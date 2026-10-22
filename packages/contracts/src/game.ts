@@ -39,7 +39,9 @@ export type Timing = typeof Timing.Type
 
 const Pixels = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 
-export const Crop = Schema.Struct({ x: Pixels, y: Pixels, width: Pixels, height: Pixels })
+const Extent = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
+
+export const Crop = Schema.Struct({ x: Pixels, y: Pixels, width: Extent, height: Extent })
 export type Crop = typeof Crop.Type
 
 export const Source = Schema.Union([

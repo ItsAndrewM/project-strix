@@ -117,10 +117,17 @@ describe("slicerOver slice", () => {
     await expect(slicer.slice(REQUEST, collect().onProgress)).rejects.toThrow(/ffmpeg exploded/)
   })
 
-  it("rejects a non-2xx answer with its body", async () => {
+  it("rejects a non-2xx JSON answer with its error", async () => {
     const { slicer } = fakeContainer(new Response('{"error":"expected { source, crop, windows }"}', { status: 400 }))
     await expect(slicer.slice(REQUEST, collect().onProgress)).rejects.toThrow(
-      /400.*expected \{ source, crop, windows \}/,
+      new Error("slicer /slice answered 400: expected { source, crop, windows }"),
+    )
+  })
+
+  it("rejects a non-2xx text answer with its body", async () => {
+    const { slicer } = fakeContainer(new Response("There is no Container instance available", { status: 503 }))
+    await expect(slicer.slice(REQUEST, collect().onProgress)).rejects.toThrow(
+      new Error("slicer /slice answered 503: There is no Container instance available"),
     )
   })
 })
@@ -137,9 +144,18 @@ describe("slicerOver probe", () => {
     expect(await request?.json()).toEqual({ source: "https://x/y.mp4", frameAtMs: 1000 })
   })
 
-  it("rejects a non-2xx answer with its body", async () => {
+  it("rejects a non-2xx answer with the error unwrapped from its JSON", async () => {
     const { slicer } = fakeContainer(new Response('{"error":"no frame at 1000 ms"}', { status: 500 }))
-    await expect(slicer.probe({ source: "https://x/y.mp4", frameAtMs: 1000 })).rejects.toThrow(/500.*no frame/)
+    await expect(slicer.probe({ source: "https://x/y.mp4", frameAtMs: 1000 })).rejects.toThrow(
+      new Error("slicer /probe answered 500: no frame at 1000 ms"),
+    )
+  })
+
+  it("keeps a JSON body without an error string as it is", async () => {
+    const { slicer } = fakeContainer(new Response('{"error":42}', { status: 500 }))
+    await expect(slicer.probe({ source: "https://x/y.mp4", frameAtMs: 1000 })).rejects.toThrow(
+      new Error('slicer /probe answered 500: {"error":42}'),
+    )
   })
 
   it("rejects a result that is not a ProbeResult", async () => {

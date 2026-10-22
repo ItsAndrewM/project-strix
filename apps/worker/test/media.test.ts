@@ -1,10 +1,11 @@
+import type { Clip } from "@strix/contracts"
 /**
  * Clip media routes: the view rendition streamed with byte ranges, and the clip thumbnail generated once and kept.
  */
 import { env } from "cloudflare:test"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Env } from "../src/env.ts"
-import { serveThumb, serveView } from "../src/game/media.ts"
+import { serveThumb, serveView, thumbTimeOf } from "../src/game/media.ts"
 import { applySchema, asDev, clearGames, createGame, ORIGIN, postJson, SENT } from "./games.ts"
 
 const SOURCE_URL = "https://video.example.test/game.mp4"
@@ -24,19 +25,38 @@ const startedGame = async (): Promise<string> => {
   return id
 }
 
+const clipOf = (durationMs: number): Clip => ({
+  index: 0,
+  startMs: 0,
+  durationMs,
+  renditions: ["model-480", "model-720", "view"],
+  state: null,
+  stateConfidence: null,
+  classification: "pending",
+})
+
+const CLIP_0 = clipOf(30_000)
+
 const viewSize = async (id: string): Promise<number> => (await env.BUCKET.head(viewKey(id)))?.size ?? 0
 
 const withoutEmail = (id: string, path: string) =>
   env.GAME.getByName(id).fetch(`https://strix.example.test/api/games/${id}/clips/${path}`)
 
-const mediaAnswering = (response: () => Promise<Response>): MediaBinding => {
+const mediaAnswering = (
+  response: () => Promise<Response>,
+  outputs: Array<MediaTransformationOutputOptions> = [],
+): MediaBinding => {
   const result: MediaTransformationResult = {
     response,
     media: () => Promise.reject(new Error("the test reads responses only")),
     contentType: () => Promise.resolve("image/jpeg"),
   }
-  const generator: MediaTransformationGenerator = { output: () => result }
-  return { input: () => ({ transform: () => generator, output: () => result }) }
+  const output = (options: MediaTransformationOutputOptions) => {
+    outputs.push(options)
+    return result
+  }
+  const generator: MediaTransformationGenerator = { output }
+  return { input: () => ({ transform: () => generator, output }) }
 }
 
 const realEnvWith = (media: MediaBinding): Env => {
@@ -212,18 +232,30 @@ describe("GET /api/games/:id/clips/:index/thumb.jpg", () => {
   it("generates the thumbnail with Media Transformations outside the fixture environment", async () => {
     const id = await startedGame()
     const frame = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
-    const response = await serveThumb(realEnvWith(mediaAnswering(async () => new Response(frame))), id, 0)
+    const outputs: Array<MediaTransformationOutputOptions> = []
+    const media = mediaAnswering(async () => new Response(frame), outputs)
+    const response = await serveThumb(realEnvWith(media), id, CLIP_0)
 
     expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([...frame])
     expect(response.status).toBe(200)
     expect(await env.BUCKET.head(thumbKey(id))).not.toBeNull()
+    expect(outputs).toEqual([{ mode: "frame", time: "15s", format: "jpg" }])
+  })
+
+  it("cuts the thumbnail from the middle of a clip shorter than 30 seconds", async () => {
+    const id = await startedGame()
+    const outputs: Array<MediaTransformationOutputOptions> = []
+    const media = mediaAnswering(async () => new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9])), outputs)
+    await serveThumb(realEnvWith(media), id, clipOf(7_000))
+
+    expect(outputs).toEqual([{ mode: "frame", time: "3s", format: "jpg" }])
   })
 
   it("answers 503, logs it and stores nothing when Media Transformations rejects", async () => {
     const id = await startedGame()
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
 
-    const response = await serveThumb(realEnvWith(mediaAnswering(() => Promise.reject(new Error("boom")))), id, 0)
+    const response = await serveThumb(realEnvWith(mediaAnswering(() => Promise.reject(new Error("boom")))), id, CLIP_0)
 
     expect(response.status).toBe(503)
     expect(consoleError).toHaveBeenCalledWith({
@@ -243,7 +275,7 @@ describe("GET /api/games/:id/clips/:index/thumb.jpg", () => {
     const response = await serveThumb(
       realEnvWith(mediaAnswering(async () => new Response("no frame", { status: 502 }))),
       id,
-      0,
+      CLIP_0,
     )
 
     expect(response.status).toBe(503)
@@ -255,5 +287,17 @@ describe("GET /api/games/:id/clips/:index/thumb.jpg", () => {
       cause: "media transformation answered 502",
     })
     expect(await env.BUCKET.head(thumbKey(id))).toBeNull()
+  })
+})
+
+describe("thumbTimeOf", () => {
+  it.each([
+    [30_000, "15s"],
+    [60_000, "15s"],
+    [15_300, "7s"],
+    [5_000, "2s"],
+    [1_000, "0s"],
+  ])("cuts a %i ms clip's thumbnail at %s", (durationMs, time) => {
+    expect(thumbTimeOf(durationMs)).toBe(time)
   })
 })

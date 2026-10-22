@@ -3,7 +3,8 @@
  * answer derived them; overlapping windows' sightings of one event are merged only when read (`mergedEventsOf`), so
  * the result never depends on the order answers arrive in and a redelivered answer cannot erase a neighbour's
  * sighting. Events a person decided (`accepted`, `rejected`, `manual`) are never merged. Event counts come from that
- * view, so a merged event counts once.
+ * view, so a merged event counts once. A window the slicer could not cut is a clip with no renditions, classified
+ * `failed`; if a late slice job does record it after all, it becomes a pending clip like any other.
  */
 import {
   ClefResponse,
@@ -16,8 +17,9 @@ import {
   type GameStatus,
   Rendition,
 } from "@strix/contracts"
-import { mergeAdjacent } from "@strix/domain"
+import { mergeAdjacent, type Window } from "@strix/domain"
 import { Schema } from "effect"
+import type { SliceCounts } from "./progress.ts"
 
 const jsonOf = <S extends Schema.Top>(schema: S) => Schema.fromJsonString(Schema.toCodecJson(schema))
 
@@ -95,6 +97,8 @@ export const saveClip = (sql: SqlStorage, clip: Clip): void => {
   sql.exec(
     `INSERT INTO clips (${CLIP_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(idx) DO UPDATE SET
+       classification = CASE WHEN json_array_length(clips.renditions) = 0
+         THEN excluded.classification ELSE clips.classification END,
        start_ms = excluded.start_ms,
        duration_ms = excluded.duration_ms,
        renditions = excluded.renditions`,
@@ -107,6 +111,24 @@ export const saveClip = (sql: SqlStorage, clip: Clip): void => {
     clip.classification,
   )
 }
+
+export const saveUnslicedWindow = (sql: SqlStorage, window: Window): boolean =>
+  sql.exec(
+    `INSERT INTO clips (${CLIP_COLUMNS}) VALUES (?, ?, ?, ?, NULL, NULL, 'failed') ON CONFLICT(idx) DO NOTHING`,
+    window.index,
+    window.startMs,
+    window.durationMs,
+    encodeRenditions([]),
+  ).rowsWritten > 0
+
+export const sliceCountsOf = (sql: SqlStorage): SliceCounts =>
+  sql
+    .exec<{ sliced: number; unsliced: number }>(
+      `SELECT COUNT(*) FILTER (WHERE json_array_length(renditions) > 0) AS sliced,
+              COUNT(*) FILTER (WHERE json_array_length(renditions) = 0) AS unsliced
+       FROM clips`,
+    )
+    .one()
 
 export const readClips = (sql: SqlStorage): ReadonlyArray<Clip> =>
   sql.exec<ClipRow>(`SELECT ${CLIP_COLUMNS} FROM clips ORDER BY idx`).toArray().map(clipOf)

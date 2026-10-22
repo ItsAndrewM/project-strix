@@ -43,7 +43,7 @@ const readingOf = (response: ClefResponse): PassOneReading | ReadingError => {
   }
 }
 
-const PROBE_CACHE = "private, max-age=3600"
+const PROBE_CACHE = "private, no-store"
 
 const CLIP_MEDIA = /^\/api\/games\/([^/]+)\/clips\/(\d+)\/(view\.mp4|thumb\.jpg)$/
 
@@ -176,10 +176,9 @@ export class GameDO extends DurableObject<Env> {
     const refusal = refusalWithoutEmail(request)
     if (refusal !== undefined) return refusal
     const index = Number(match[2])
-    if (!Number.isSafeInteger(index) || readClip(this.ctx.storage.sql, index) === undefined) {
-      return errorResponse(new NotFound())
-    }
-    return match[3] === "view.mp4" ? serveView(this.env, gameId, index, request) : serveThumb(this.env, gameId, index)
+    const clip = Number.isSafeInteger(index) ? readClip(this.ctx.storage.sql, index) : undefined
+    if (clip === undefined) return errorResponse(new NotFound())
+    return match[3] === "view.mp4" ? serveView(this.env, gameId, index, request) : serveThumb(this.env, gameId, clip)
   }
 
   private async probeFrame(request: Request, gameId: string): Promise<Response> {

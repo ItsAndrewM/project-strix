@@ -1,11 +1,11 @@
 /**
  * Clip media routes. The view rendition streams from R2 with byte-range support so the player can seek. The clip
- * thumbnail is a frame cut from the view rendition by Media Transformations the first time it is asked for, then kept
- * in R2; the fixture environment has no Media Transformations and stores the probe fixture's frame instead.
+ * thumbnail is a frame cut from the view rendition by Media Transformations the first time it is asked for (15 s in, or
+ * the middle of a shorter clip, in whole seconds as the `time` option takes them), then kept in R2; the fixture environment has no Media Transformations and stores the probe fixture's frame instead.
  *
  * Real R2 throws on an unsatisfiable range while the local simulator serves the whole object, so both are answered 416.
  */
-import { NotFound, ServiceUnavailable } from "@strix/contracts"
+import { type Clip, NotFound, ServiceUnavailable } from "@strix/contracts"
 import probeFixture from "../../fixtures/probe.json"
 import type { Env } from "../env.ts"
 import { errorResponse } from "../error-response.ts"
@@ -13,7 +13,7 @@ import { logThumbFailure, logViewFailure, messageOf } from "../logs.ts"
 import { bytesOf } from "./ingest.ts"
 
 const MEDIA_CACHE = "private, max-age=3600"
-const THUMB_FRAME_AT = "15s"
+const THUMB_FRAME_AT_MS = 15_000
 const BYTE_RANGE = /^bytes=(?:(\d+)-\d*|-(\d+))$/
 
 class FrameFailed extends Error {
@@ -21,6 +21,9 @@ class FrameFailed extends Error {
     super(`media transformation answered ${status}`)
   }
 }
+
+export const thumbTimeOf = (durationMs: number): string =>
+  `${Math.floor(Math.min(THUMB_FRAME_AT_MS, durationMs / 2) / 1000)}s`
 
 const viewKey = (gameId: string, index: number): string => `clips/${gameId}/${index}/view.mp4`
 const thumbKey = (gameId: string, index: number): string => `thumbs/${gameId}/${index}.jpg`
@@ -95,27 +98,28 @@ export const serveView = async (env: Env, gameId: string, index: number, request
   }
 }
 
-const frameFromView = async (env: Env, view: ReadableStream<Uint8Array>): Promise<Uint8Array> => {
-  const response = await env.MEDIA.input(view).output({ mode: "frame", time: THUMB_FRAME_AT, format: "jpg" }).response()
+const frameFromView = async (env: Env, view: ReadableStream<Uint8Array>, time: string): Promise<Uint8Array> => {
+  const response = await env.MEDIA.input(view).output({ mode: "frame", time, format: "jpg" }).response()
   if (!response.ok) throw new FrameFailed(response.status)
   return new Uint8Array(await response.arrayBuffer())
 }
 
-const thumbBytes = async (env: Env, gameId: string, index: number): Promise<Uint8Array | null> => {
+const thumbBytes = async (env: Env, gameId: string, clip: Clip): Promise<Uint8Array | null> => {
   if (env.FIXTURES === "1") return bytesOf(probeFixture.frameJpegBase64)
-  const view = await env.BUCKET.get(viewKey(gameId, index))
-  return view === null ? null : frameFromView(env, view.body)
+  const view = await env.BUCKET.get(viewKey(gameId, clip.index))
+  return view === null ? null : frameFromView(env, view.body, thumbTimeOf(clip.durationMs))
 }
 
 const jpeg = (body: BodyInit | null): Response =>
   new Response(body, { headers: { "content-type": "image/jpeg", "cache-control": MEDIA_CACHE } })
 
-export const serveThumb = async (env: Env, gameId: string, index: number): Promise<Response> => {
+export const serveThumb = async (env: Env, gameId: string, clip: Clip): Promise<Response> => {
+  const { index } = clip
   const key = thumbKey(gameId, index)
   const stored = await env.BUCKET.get(key)
   if (stored !== null) return jpeg(stored.body)
   try {
-    const bytes = await thumbBytes(env, gameId, index)
+    const bytes = await thumbBytes(env, gameId, clip)
     if (bytes === null) return errorResponse(new NotFound())
     await env.BUCKET.put(key, bytes, { httpMetadata: { contentType: "image/jpeg" } })
     return jpeg(bytes)

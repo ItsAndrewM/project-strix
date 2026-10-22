@@ -3,11 +3,13 @@
  * no or out-of-range probabilities, or whose likeliest key was not among the criteria asked fails the whole clip with
  * a `ReadingError` naming the id, so a malformed answer never becomes an event. Choices and scores take the likeliest
  * key from `probabilities` rather than trusting Clef's own `choice` or `score`; a score keyed by its legend label
- * rather than its level resolves through the legend when exactly one entry carries that label.
+ * rather than its level resolves through the legend when exactly one entry carries that label. Shots are the one
+ * exception to failing the clip: no event depends on them yet, so an unreadable shots answer is logged and read as null.
  */
 import { type ClefAnswer, type ClefResponse, GameState, Infraction, PenaltyClass, Side } from "@strix/contracts"
 import { argmax, percentOf } from "@strix/domain"
 import { Schema } from "effect"
+import { logShotsUnreadable } from "../logs.ts"
 import type { PassOneId } from "./questions.ts"
 
 export class ReadingError extends Error {
@@ -32,8 +34,8 @@ export interface PassOneReading {
   readonly penaltyTeam: TeamReading
   readonly infraction: { readonly id: Infraction; readonly confidence: number }
   readonly penaltyClass: { readonly id: PenaltyClass; readonly confidence: number }
-  readonly shotsHome: ShotsReading
-  readonly shotsAway: ShotsReading
+  readonly shotsHome: ShotsReading | null
+  readonly shotsAway: ShotsReading | null
   readonly goalieChange: number
   readonly goalieChangeTeam: TeamReading
 }
@@ -122,6 +124,16 @@ const shotsOf = (response: ClefResponse, id: PassOneId): ShotsReading => {
   return { count: Number(level), confidence: percentOf(probabilityOf(id, answer.confidence)) }
 }
 
+const shotsOrNull = (response: ClefResponse, id: "shots_home" | "shots_away"): ShotsReading | null => {
+  try {
+    return shotsOf(response, id)
+  } catch (error) {
+    if (!(error instanceof ReadingError)) throw error
+    logShotsUnreadable(id, error.message)
+    return null
+  }
+}
+
 export const readPassOne = (response: ClefResponse): PassOneReading => {
   const gameState = choiceOf(response, "game_state", isGameState)
   const infraction = choiceOf(response, "infraction", isInfraction)
@@ -134,8 +146,8 @@ export const readPassOne = (response: ClefResponse): PassOneReading => {
     penaltyTeam: teamOf(response, "penalty_team"),
     infraction: { id: infraction.key, confidence: infraction.confidence },
     penaltyClass: { id: penaltyClass.key, confidence: penaltyClass.confidence },
-    shotsHome: shotsOf(response, "shots_home"),
-    shotsAway: shotsOf(response, "shots_away"),
+    shotsHome: shotsOrNull(response, "shots_home"),
+    shotsAway: shotsOrNull(response, "shots_away"),
     goalieChange: noulOf(response, "goalie_change"),
     goalieChangeTeam: teamOf(response, "goalie_change_team"),
   }
