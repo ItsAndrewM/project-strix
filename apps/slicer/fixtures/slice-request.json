@@ -1,0 +1,16 @@
+{
+  "source": "https://pub-8613b7f94d6146408add8fefb52c52e8.r2.dev/aus-mobile-demo.mp4",
+  "crop": { "x": 0, "y": 0, "width": 400, "height": 60 },
+  "windows": [
+    {
+      "index": 0,
+      "startMs": 0,
+      "durationMs": 30000,
+      "puts": {
+        "model-480": "https://strix.r2.example/clips/1/0/model-480.mp4?X-Amz-Signature=a",
+        "model-720": "https://strix.r2.example/clips/1/0/model-720.mp4?X-Amz-Signature=b",
+        "view": "https://strix.r2.example/clips/1/0/view.mp4?X-Amz-Signature=c"
+      }
+    }
+  ]
+}
