@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test"
 
 const DEV_EMAIL = "andrew@example.test"
 
-test("the api answers only through the dev identity and a forged token changes nothing", async ({ page }) => {
+test("in preview the dev identity answers every api request, so a forged access token is never read", async ({
+  page,
+}) => {
   const bare = await page.request.get("/api/games")
   expect(bare.status()).toBe(200)
 

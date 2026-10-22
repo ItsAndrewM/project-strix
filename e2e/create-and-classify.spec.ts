@@ -24,13 +24,20 @@ test("creates a game from a url, slices it and classifies its clips", async ({ p
   await expect(timeline.getByRole("button")).toHaveCount(3)
 
   const events = page.getByRole("region", { name: /^Events/u })
-  const goal = events.getByRole("button").filter({ hasText: "Goal" }).filter({ hasText: "auto" })
+  const exactly = (text: string) => page.getByText(text, { exact: true })
+  const rowsOf = (type: string, status: string) =>
+    events
+      .getByRole("button")
+      .filter({ has: exactly(type) })
+      .filter({ has: exactly(status) })
+
+  const goal = rowsOf("Goal", "auto")
   await expect(goal).toHaveCount(1)
   await goal.click()
   await expect(page.locator("video")).toHaveAttribute("src", /\/clips\/0\/view\.mp4$/u)
 
-  const penalties = events.getByRole("button").filter({ hasText: "Penalty" })
-  await expect(penalties).toHaveCount(0)
+  const discardedPenalty = rowsOf("Penalty", "discarded")
+  await expect(events.getByRole("button").filter({ has: exactly("Penalty") })).toHaveCount(0)
   await page.getByRole("switch", { name: "Show discarded" }).click()
-  await expect(penalties.filter({ hasText: "discarded" })).toHaveCount(1)
+  await expect(discardedPenalty).toHaveCount(1)
 })
