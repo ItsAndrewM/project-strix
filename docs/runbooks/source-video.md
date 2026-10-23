@@ -47,7 +47,8 @@ signs it at slice time.
 
 On the probe frame, drag the crop box over the broadcast score bug before pressing **Start**: that overlay is exactly
 what the model must not see. A full game is roughly 430 thirty-second clips in 18 ranges, six slicing at once, and one
-Clef call per clip.
+Clef call per clip. One container encodes a window in about a minute, so a ten-minute range takes close to half an
+hour and a three-hour broadcast about ninety minutes; classification keeps pace with slicing.
 
 When checking results against a boxscore, match by period and event order, not by video time: intermissions and
 stoppages mean the video clock and the game clock drift apart, which is why the clock is always entered by hand.

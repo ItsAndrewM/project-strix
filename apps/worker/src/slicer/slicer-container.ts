@@ -1,3 +1,7 @@
+/**
+ * A game's containers are named by concurrency slot, not by range, so the seventh range runs on the container the
+ * first one just freed instead of asking for a seventh instance while six are still idling towards their sleep.
+ */
 import { Container, getContainer } from "@cloudflare/containers"
 import type { Env } from "../env.ts"
 import {
@@ -88,8 +92,8 @@ export const slicerOver = (send: Send): Slicer => ({
 export const containerSlicer = (
   namespace: DurableObjectNamespace<SlicerContainer>,
   gameId: string,
-  rangeIndex: number,
+  slot: number,
 ): Slicer => {
-  const container = getContainer(namespace, `${gameId}:${rangeIndex}`)
+  const container = getContainer(namespace, `${gameId}:${slot}`)
   return slicerOver((request) => container.fetch(request))
 }

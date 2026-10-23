@@ -54,7 +54,7 @@ const refusalWithoutEmail = (request: Request): Response | undefined => {
 }
 
 export class GameDO extends DurableObject<Env> {
-  readonly active = new Set<number>()
+  readonly active = new Map<number, number>()
   protected readonly broadcast: Broadcast
   private readonly publish: Publish
   private readonly api: GameApi
@@ -160,7 +160,7 @@ export class GameDO extends DurableObject<Env> {
       env: this.env,
       gameId,
       publish: this.publish,
-      slicer: (rangeIndex) => slicerFor(this.env, gameId, rangeIndex),
+      slicer: (slot) => slicerFor(this.env, gameId, slot),
       urls: urlsFor(this.env),
       clipReady: (clip) => this.clipReady(clip),
       active: this.active,

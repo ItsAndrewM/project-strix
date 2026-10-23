@@ -358,7 +358,7 @@ describe("the slicing alarm", () => {
   it("keeps slicing and re-arms while a range's job is still active in this instance", async () => {
     const id = await slicing({ 0: { status: "running", startedAt: Date.now() } }, 0)
     const sends = spySends()
-    await runInDurableObject(env.GAME.getByName(id), (instance) => instance.active.add(0))
+    await runInDurableObject(env.GAME.getByName(id), (instance) => instance.active.set(0, 0))
 
     await runDurableObjectAlarm(env.GAME.getByName(id))
     expect(await gameOf(id)).toMatchObject({ status: "slicing" })
@@ -523,6 +523,61 @@ describe("a window the slicer could not cut", () => {
     ])
     expect(clips[1]).toEqual(unsliced({ index: 1, startMs: 25_000, durationMs: 30_000 }))
     expect(await gameOf(id)).toMatchObject({ status: "classifying", failure: "1 window could not be sliced" })
+  })
+})
+
+describe("the slicer slots", () => {
+  const EIGHT_RANGES_MS = 8 * 600_000
+
+  it("send a later range to the slot its predecessor freed, never asking for a seventh container", async () => {
+    const id = await probed()
+    const slots: number[] = []
+    const done: Slicer = {
+      probe: () => Promise.reject(new Error("not probed here")),
+      slice: (_req, onProgress) => onProgress({ kind: "done" }),
+    }
+    await runInDurableObject(env.GAME.getByName(id), async (instance, state) => {
+      const game = readGame(state.storage.sql)
+      if (game === undefined) throw new Error("the game was not created")
+      saveGame(state.storage.sql, { ...game, status: "slicing", durationMs: EIGHT_RANGES_MS })
+      queueRanges(state.storage, 8, Date.now())
+      const deps: IngestDeps = {
+        ...depsWith(instance, state, id, done),
+        slicer: async (slot) => {
+          slots.push(slot)
+          return done
+        },
+      }
+      await runRanges(deps, rangesFor(EIGHT_RANGES_MS))
+    })
+
+    expect(slots).toHaveLength(8)
+    expect(Math.max(...slots)).toBeLessThan(6)
+    expect(Object.values((await rangesOf(id)) ?? {}).map((record) => record.status)).toEqual(Array(8).fill("done"))
+  })
+
+  it("touch the range's progress with every window the job reports", async () => {
+    const id = await probed()
+    const seen: Array<number | undefined> = []
+    await runInDurableObject(env.GAME.getByName(id), async (instance, state) => {
+      const game = readGame(state.storage.sql)
+      if (game === undefined) throw new Error("the game was not created")
+      saveGame(state.storage.sql, { ...game, status: "slicing" })
+      queueRanges(state.storage, 1, Date.now())
+      const reporting: Slicer = {
+        probe: () => Promise.reject(new Error("not probed here")),
+        slice: async (req, onProgress) => {
+          seen.push(state.storage.kv.get<Ranges>("ranges")?.[0]?.progressAt)
+          await onProgress({ kind: "failed", index: req.windows[0]?.index ?? 0, reason: "test" })
+          seen.push(state.storage.kv.get<Ranges>("ranges")?.[0]?.progressAt)
+          await onProgress({ kind: "done" })
+        },
+      }
+      vi.spyOn(console, "error").mockImplementation(() => undefined)
+      await runRanges(depsWith(instance, state, id, reporting), rangesFor(FIXTURE_DURATION_MS))
+    })
+    expect(seen[0]).toBeUndefined()
+    expect(seen[1]).toEqual(expect.any(Number))
   })
 })
 

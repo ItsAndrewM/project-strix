@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { PROBE_BUDGET_MS, run, SLICE_BUDGET_MS } from "../src/jobs.ts"
+import { PROBE_BUDGET_MS, run, WINDOW_BUDGET_MS } from "../src/jobs.ts"
 
 const node = (script: string, deadline: number) => run(process.execPath, ["-e", script], deadline)
 
@@ -30,9 +30,13 @@ describe("run", () => {
   })
 })
 
-describe("job budgets", () => {
-  it("end before the worker's probe and range alarms fire", () => {
+describe("process budgets", () => {
+  it("end before the worker gives up on the probe or on a range's progress", () => {
     expect(PROBE_BUDGET_MS).toBeLessThan(5 * 60_000)
-    expect(SLICE_BUDGET_MS).toBeLessThan(30 * 60_000)
+    expect(WINDOW_BUDGET_MS).toBeLessThan(30 * 60_000)
+  })
+
+  it("give a window several times the minute an encode takes", () => {
+    expect(WINDOW_BUDGET_MS).toBeGreaterThanOrEqual(5 * 60_000)
   })
 })
