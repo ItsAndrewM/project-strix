@@ -85,6 +85,9 @@ const isRunning = (record: RangeRecord): boolean => record.status === "running"
 const stalled = (record: RangeRecord, now: number): boolean =>
   isRunning(record) && now - (record.progressAt ?? record.startedAt) > RANGE_TIMEOUT_MS
 
+export const stalledRangeIndexes = (ranges: Ranges, now: number): ReadonlyArray<number> =>
+  Object.entries(ranges).flatMap(([index, record]) => (stalled(record, now) ? [Number(index)] : []))
+
 export const timeOutRanges = (ranges: Ranges, now: number): Ranges =>
   mapRanges(
     ranges,

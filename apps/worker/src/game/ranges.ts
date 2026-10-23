@@ -10,7 +10,11 @@
  * empties it while the records still say running, so the alarm resumes those ranges (and the queued ones whenever a
  * slot is free), slicing only the windows that have no clip yet. A job that dies, as every job does when a rollout or
  * reset recycles its container, hands its range back to the queue for the alarm to resume, up to `MAX_RANGE_ATTEMPTS`
- * jobs per range; only then is the range failed. A range's job is sent to the slicer of its slot, so a
+ * jobs per range; only then is the range failed, and a range that goes quiet for `RANGE_TIMEOUT_MS` is retried the
+ * same way. Claiming a range numbers the job with the range's attempt count, and a job acts on its range only while
+ * its number is current, so a job the alarm gave up on cannot clobber its successor. The alarm decides what to resume
+ * from a read it takes with no await before the requeue, so it never resurrects a range the slot loop has just
+ * claimed. A range's job is sent to the slicer of its slot, so a
  * game never asks for more containers than it runs ranges at once. Every window a job reports touches the range's
  * `progressAt`, which is what the timeout watches.
  */
@@ -24,10 +28,12 @@ import {
   failureAfterRanges,
   MAX_RANGE_ATTEMPTS,
   orphanedRangeIndexes,
+  RANGE_TIMED_OUT,
   rangeFailureReason,
   type RangeRecord,
   type RangeStatus,
   type Ranges,
+  stalledRangeIndexes,
   statusAfterRanges,
   timeOutRanges,
 } from "./progress.ts"
@@ -59,12 +65,22 @@ const markRange = (storage: DurableObjectStorage, index: number, status: RangeSt
   const previous = ranges[index]
   const restarted = status === "running" || status === "queued"
   const startedAt = restarted ? Date.now() : (previous?.startedAt ?? Date.now())
-  const attempts = (previous?.attempts ?? 0) + (status === "running" ? 1 : 0)
-  const record: RangeRecord = attempts > 0 ? { status, startedAt, attempts } : { status, startedAt }
+  const attempts = previous?.attempts
+  const record: RangeRecord = attempts === undefined ? { status, startedAt } : { status, startedAt, attempts }
   writeRanges(storage, { ...ranges, [index]: reason === undefined ? record : { ...record, reason } })
 }
 
-const attemptsOf = (storage: DurableObjectStorage, index: number): number => readRanges(storage)[index]?.attempts ?? 1
+const claimRange = (storage: DurableObjectStorage, index: number): number => {
+  const ranges = readRanges(storage)
+  const attempts = (ranges[index]?.attempts ?? 0) + 1
+  writeRanges(storage, { ...ranges, [index]: { status: "running", startedAt: Date.now(), attempts } })
+  return attempts
+}
+
+const owns = (storage: DurableObjectStorage, index: number, attempt: number): boolean => {
+  const record = readRanges(storage)[index]
+  return record?.status === "running" && record.attempts === attempt
+}
 
 const putsFor = async (deps: IngestDeps, index: number): Promise<SliceWindow["puts"]> => {
   const put = (rendition: Rendition) => deps.urls.put(`clips/${deps.gameId}/${index}/${rendition}.mp4`)
@@ -111,9 +127,6 @@ const recordUnsliced = async (deps: IngestDeps, windows: ReadonlyArray<Window>):
   await deps.publish(["clips", "game"])
 }
 
-const isRunning = (storage: DurableObjectStorage, index: number): boolean =>
-  readRanges(storage)[index]?.status === "running"
-
 const touchRange = (storage: DurableObjectStorage, index: number): void => {
   const ranges = readRanges(storage)
   const record = ranges[index]
@@ -121,9 +134,9 @@ const touchRange = (storage: DurableObjectStorage, index: number): void => {
 }
 
 const progressFor =
-  (deps: IngestDeps, index: number, range: Range) =>
+  (deps: IngestDeps, index: number, attempt: number, range: Range) =>
   async (progress: SliceProgress): Promise<void> => {
-    if (!isRunning(deps.ctx.storage, index)) return
+    if (!owns(deps.ctx.storage, index, attempt)) return
     touchRange(deps.ctx.storage, index)
     if (progress.kind === "clip") {
       await deps.clipReady(clipOf(windowOf(range, progress.index)))
@@ -133,17 +146,22 @@ const progressFor =
     }
   }
 
-const sliceRange = async (deps: IngestDeps, index: number, slot: number, range: Range): Promise<void> => {
+interface Claim {
+  readonly index: number
+  readonly attempt: number
+  readonly slot: number
+}
+
+const sliceRange = async (deps: IngestDeps, { index, attempt, slot }: Claim, range: Range): Promise<void> => {
   const { storage } = deps.ctx
   try {
     if (range.windows.length > 0) {
       const slicer = await deps.slicer(slot)
-      await slicer.slice(await sliceRequestFor(deps, range), progressFor(deps, index, range))
+      await slicer.slice(await sliceRequestFor(deps, range), progressFor(deps, index, attempt, range))
     }
-    if (isRunning(storage, index)) markRange(storage, index, "done")
+    if (owns(storage, index, attempt)) markRange(storage, index, "done")
   } catch (cause) {
-    if (!isRunning(storage, index)) return
-    const attempt = attemptsOf(storage, index)
+    if (!owns(storage, index, attempt)) return
     if (attempt < MAX_RANGE_ATTEMPTS) {
       logRangeRetry(deps.gameId, index, attempt, cause)
       markRange(storage, index, "queued")
@@ -165,11 +183,11 @@ const freeSlot = (active: ReadonlyMap<number, number>): number => {
 const runRange = async (deps: IngestDeps, index: number, range: Range): Promise<void> => {
   const { storage } = deps.ctx
   if (readRanges(storage)[index]?.status !== "queued") return
-  markRange(storage, index, "running")
+  const attempt = claimRange(storage, index)
   const slot = freeSlot(deps.active)
   deps.active.set(index, slot)
   try {
-    await sliceRange(deps, index, slot, range)
+    await sliceRange(deps, { index, attempt, slot }, range)
   } finally {
     deps.active.delete(index)
   }
@@ -214,9 +232,11 @@ const resumeJob = (deps: IngestDeps, index: number, range: Range, sliced: Readon
   return [index, { ...range, windows }]
 }
 
-const resume = (deps: IngestDeps, indexes: ReadonlyArray<number>, durationMs: number): void => {
+const resume = (deps: IngestDeps, durationMs: number): void => {
+  const { storage } = deps.ctx
+  const indexes = orphanedRangeIndexes(readRanges(storage), new Set(deps.active.keys()), CONCURRENT_RANGES)
   const all = rangesFor(durationMs)
-  const sliced = slicedIndexes(deps.ctx.storage.sql)
+  const sliced = slicedIndexes(storage.sql)
   const jobs = indexes.flatMap((index) => {
     const range = all[index]
     return range === undefined ? [] : [resumeJob(deps, index, range, sliced)]
@@ -224,14 +244,26 @@ const resume = (deps: IngestDeps, indexes: ReadonlyArray<number>, durationMs: nu
   if (jobs.length > 0) deps.ctx.waitUntil(runJobs(deps, jobs))
 }
 
+const retryStalled = (deps: IngestDeps, now: number): void => {
+  const { storage } = deps.ctx
+  for (const index of stalledRangeIndexes(readRanges(storage), now)) {
+    const attempt = readRanges(storage)[index]?.attempts ?? 1
+    if (attempt >= MAX_RANGE_ATTEMPTS) continue
+    logRangeRetry(deps.gameId, index, attempt, RANGE_TIMED_OUT)
+    markRange(storage, index, "queued")
+    deps.active.delete(index)
+  }
+}
+
 export const checkRanges = async (deps: IngestDeps): Promise<void> => {
   const { storage } = deps.ctx
   const game = readGame(storage.sql)
   if (game?.status !== "slicing") return
+  retryStalled(deps, Date.now())
   const ranges = timeOutRanges(readRanges(storage), Date.now())
   writeRanges(storage, ranges)
   await recordUnsliced(deps, windowsOfFailedRanges(ranges, game.durationMs ?? 0))
-  resume(deps, orphanedRangeIndexes(ranges, new Set(deps.active.keys()), CONCURRENT_RANGES), game.durationMs ?? 0)
+  resume(deps, game.durationMs ?? 0)
   await settle(deps)
   if (readGame(storage.sql)?.status === "slicing") await storage.setAlarm(Date.now() + SLICING_CHECK_MS)
 }

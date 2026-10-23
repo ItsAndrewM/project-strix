@@ -10,6 +10,7 @@ import {
   type Ranges,
   RANGE_TIMEOUT_MS,
   rangeFailureReason,
+  stalledRangeIndexes,
   statusAfterRanges,
   timeOutRanges,
 } from "../src/game/progress.ts"
@@ -117,6 +118,19 @@ describe("timeOutRanges", () => {
     const stalled = NOW - RANGE_TIMEOUT_MS - 1
     const ranges: Ranges = { 0: at("running", stalled), 1: at("queued", NOW - RANGE_TIMEOUT_MS * 2), 2: at("done") }
     expect(timeOutRanges(ranges, NOW)).toEqual({ ...ranges, 0: failedFor(RANGE_TIMED_OUT, stalled) })
+  })
+})
+
+describe("stalledRangeIndexes", () => {
+  it("names the running ranges that have gone 30 minutes without progress", () => {
+    const quiet = NOW - RANGE_TIMEOUT_MS - 1
+    const ranges: Ranges = {
+      0: at("running", quiet),
+      1: { ...at("running", quiet), progressAt: NOW - 1 },
+      2: at("queued", quiet),
+      3: at("running"),
+    }
+    expect(stalledRangeIndexes(ranges, NOW)).toEqual([0])
   })
 })
 
