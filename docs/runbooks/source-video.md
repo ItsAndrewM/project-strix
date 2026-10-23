@@ -35,6 +35,12 @@ The upload is multipart, so multi-gigabyte files are fine. The second command pr
 it as the game's video URL. Keys under `sources/` are never touched by the app, so re-sourcing a game or deleting it
 leaves the file in place.
 
+The game stores that URL as its source and reads it only while probing and slicing, which a full game finishes within
+the hour. After seven days the signature expires, so a game that is re-sourced or whose slicing is retried later than
+that must be given a fresh URL from the same `url` command first; the stored one is sent to the slicer unchanged and
+R2 would refuse it. Sources that live past that window belong to the upload feature, which keeps the bucket key and
+signs it at slice time.
+
 ## 3. Start the game
 
 On the probe frame, drag the crop box over the broadcast score bug before pressing **Start**: that overlay is exactly
