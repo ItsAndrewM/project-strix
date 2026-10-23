@@ -29,6 +29,10 @@ export const logRangeFailure = (gameId: string, rangeIndex: number, cause: unkno
   console.error({ event: "range-failed", gameId, rangeIndex, cause: messageOf(cause) })
 }
 
+export const logRangeResumed = (gameId: string, rangeIndex: number, windows: number): void => {
+  console.warn({ event: "range-resumed", gameId, rangeIndex, windows })
+}
+
 export const logEnqueueFailure = (gameId: string, clipIndex: number, cause: unknown): void => {
   console.error({ event: "enqueue-failed", gameId, clipIndex, cause: messageOf(cause) })
 }

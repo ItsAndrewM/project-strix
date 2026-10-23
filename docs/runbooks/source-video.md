@@ -17,9 +17,11 @@ export R2_SECRET_ACCESS_KEY=...
 
 720p is all Strix uses: the model sees 480p and the viewer gets 720p. A three-hour broadcast is about 3 GB at this
 size. `+faststart` puts the index at the front of the file so the slicer can seek without first reading the end.
+`vcodec^=avc1` insists on H.264: YouTube's default 720p track is often AV1 at 60 fps, which the slicer container would
+have to decode in software for every window.
 
 ```bash
-yt-dlp -f "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]" \
+yt-dlp -f "bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]/b[height<=720][vcodec^=avc1]" \
   --merge-output-format mp4 --postprocessor-args "ffmpeg:-movflags +faststart" \
   -o sjs-vs-min-2025-10-26.mp4 "https://www.youtube.com/watch?v=YXKVkd39ZSw"
 ```

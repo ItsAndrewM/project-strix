@@ -1,8 +1,9 @@
 /**
  * Slicing progress, kept per range in the game's DO storage. A range is `queued` until a slot of the runner picks it
  * up, `running` while its slice job streams, then `done` or `failed` (with the reason). `startedAt` is when it last
- * changed to queued or running. A range running past `RANGE_TIMEOUT_MS` is presumed dead; once nothing runs, nothing
- * will start the queued ranges either, so they fail with it.
+ * changed to queued or running. A range running past `RANGE_TIMEOUT_MS` is presumed dead. A range recorded as running
+ * whose job is not active in this instance was orphaned by a reset or eviction, as were the queued ranges once nothing
+ * is active; the alarm resumes those (see ranges.ts) instead of failing them.
  *
  * Every window a failed range did not slice is recorded as an unsliced clip, so a game that settles with some of its
  * video missing says how much in its `failure`, while its status still follows the clips that were sliced.
@@ -74,8 +75,14 @@ const isQueued = (record: RangeRecord): boolean => record.status === "queued"
 
 const isRunning = (record: RangeRecord): boolean => record.status === "running"
 
-export const timeOutRanges = (ranges: Ranges, now: number): Ranges => {
-  const stalled = (record: RangeRecord) => isRunning(record) && now - record.startedAt > RANGE_TIMEOUT_MS
-  const timedOut = mapRanges(ranges, failedIf(stalled))
-  return Object.values(timedOut).some(isRunning) ? timedOut : mapRanges(timedOut, failedIf(isQueued))
-}
+export const timeOutRanges = (ranges: Ranges, now: number): Ranges =>
+  mapRanges(
+    ranges,
+    failedIf((record) => isRunning(record) && now - record.startedAt > RANGE_TIMEOUT_MS),
+  )
+
+export const orphanedRangeIndexes = (ranges: Ranges, active: ReadonlySet<number>): ReadonlyArray<number> =>
+  Object.entries(ranges).flatMap(([index, record]) => {
+    const orphaned = isRunning(record) ? !active.has(Number(index)) : isQueued(record) && active.size === 0
+    return orphaned ? [Number(index)] : []
+  })

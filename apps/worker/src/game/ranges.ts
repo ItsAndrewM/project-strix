@@ -6,22 +6,28 @@
  * for a slot never carries expired URLs. Range records live in synchronous DO KV so concurrent ranges never lose an
  * update between a read and a write. Once the alarm has failed a range as timed out, whatever its job still reports
  * is ignored: the game has settled on that failure and a late clip must not contradict it.
+ * The jobs running in this instance are tracked in `deps.active`; a reset or eviction empties it while the records
+ * still say running, so the alarm resumes those ranges (and the queued ones once nothing is active), slicing only the
+ * windows that have no clip yet.
  */
 import type { Clip, Rendition } from "@strix/contracts"
 import { type Range, rangesFor, type Window } from "@strix/domain"
-import { logRangeFailure, logWindowFailure } from "../logs.ts"
+import { logRangeFailure, logRangeResumed, logWindowFailure } from "../logs.ts"
 import type { SliceProgress, SliceRequest, SliceWindow } from "../slicer/protocol.ts"
 import type { IngestDeps } from "./ingest.ts"
 import {
   failedRangeIndexes,
   failureAfterRanges,
+  orphanedRangeIndexes,
   rangeFailureReason,
   type RangeStatus,
   type Ranges,
   statusAfterRanges,
   timeOutRanges,
 } from "./progress.ts"
-import { changeGame, readGame, readiedIfClassified, saveUnslicedWindow, sliceCountsOf } from "./store.ts"
+import { changeGame, readGame, readiedIfClassified, saveUnslicedWindow, sliceCountsOf, slicedIndexes } from "./store.ts"
+
+type Job = readonly [index: number, range: Range]
 
 export const SLICING_CHECK_MS = 60_000
 
@@ -44,7 +50,8 @@ export const queueRanges = (storage: DurableObjectStorage, count: number, now: n
 
 const markRange = (storage: DurableObjectStorage, index: number, status: RangeStatus, reason?: string): void => {
   const ranges = readRanges(storage)
-  const startedAt = status === "running" ? Date.now() : (ranges[index]?.startedAt ?? Date.now())
+  const restarted = status === "running" || status === "queued"
+  const startedAt = restarted ? Date.now() : (ranges[index]?.startedAt ?? Date.now())
   writeRanges(storage, {
     ...ranges,
     [index]: reason === undefined ? { status, startedAt } : { status, startedAt, reason },
@@ -111,19 +118,31 @@ const progressFor =
     }
   }
 
-const runRange = async (deps: IngestDeps, index: number, range: Range): Promise<void> => {
+const sliceRange = async (deps: IngestDeps, index: number, range: Range): Promise<void> => {
   const { storage } = deps.ctx
-  if (readRanges(storage)[index]?.status !== "queued") return
-  markRange(storage, index, "running")
   try {
-    const slicer = await deps.slicer(index)
-    await slicer.slice(await sliceRequestFor(deps, range), progressFor(deps, index, range))
+    if (range.windows.length > 0) {
+      const slicer = await deps.slicer(index)
+      await slicer.slice(await sliceRequestFor(deps, range), progressFor(deps, index, range))
+    }
     if (isRunning(storage, index)) markRange(storage, index, "done")
   } catch (cause) {
     if (!isRunning(storage, index)) return
     logRangeFailure(deps.gameId, index, cause)
     markRange(storage, index, "failed", rangeFailureReason(cause))
     await recordUnsliced(deps, range.windows)
+  }
+}
+
+const runRange = async (deps: IngestDeps, index: number, range: Range): Promise<void> => {
+  const { storage } = deps.ctx
+  if (readRanges(storage)[index]?.status !== "queued") return
+  markRange(storage, index, "running")
+  deps.active.add(index)
+  try {
+    await sliceRange(deps, index, range)
+  } finally {
+    deps.active.delete(index)
   }
 }
 
@@ -138,21 +157,42 @@ const settle = async (deps: IngestDeps): Promise<void> => {
   await deps.publish(["game"])
 }
 
-export const runRanges = async (deps: IngestDeps, ranges: ReadonlyArray<Range>): Promise<void> => {
-  const pending = [...ranges.entries()]
+const runJobs = async (deps: IngestDeps, jobs: ReadonlyArray<Job>): Promise<void> => {
+  const pending = [...jobs]
   const slot = async (): Promise<void> => {
     const next = pending.shift()
     if (next === undefined) return
     await runRange(deps, ...next)
     await slot()
   }
-  await Promise.all(Array.from({ length: Math.min(CONCURRENT_RANGES, pending.length) }, slot))
+  const slots = Math.min(CONCURRENT_RANGES - deps.active.size, pending.length)
+  await Promise.all(Array.from({ length: Math.max(0, slots) }, slot))
   await settle(deps)
 }
+
+export const runRanges = (deps: IngestDeps, ranges: ReadonlyArray<Range>): Promise<void> =>
+  runJobs(deps, [...ranges.entries()])
 
 const windowsOfFailedRanges = (ranges: Ranges, durationMs: number): ReadonlyArray<Window> => {
   const all = rangesFor(durationMs)
   return failedRangeIndexes(ranges).flatMap((index) => all[index]?.windows ?? [])
+}
+
+const resumeJob = (deps: IngestDeps, index: number, range: Range, sliced: ReadonlySet<number>): Job => {
+  markRange(deps.ctx.storage, index, "queued")
+  const windows = range.windows.filter((window) => !sliced.has(window.index))
+  logRangeResumed(deps.gameId, index, windows.length)
+  return [index, { ...range, windows }]
+}
+
+const resume = (deps: IngestDeps, indexes: ReadonlyArray<number>, durationMs: number): void => {
+  const all = rangesFor(durationMs)
+  const sliced = slicedIndexes(deps.ctx.storage.sql)
+  const jobs = indexes.flatMap((index) => {
+    const range = all[index]
+    return range === undefined ? [] : [resumeJob(deps, index, range, sliced)]
+  })
+  if (jobs.length > 0) deps.ctx.waitUntil(runJobs(deps, jobs))
 }
 
 export const checkRanges = async (deps: IngestDeps): Promise<void> => {
@@ -162,6 +202,7 @@ export const checkRanges = async (deps: IngestDeps): Promise<void> => {
   const ranges = timeOutRanges(readRanges(storage), Date.now())
   writeRanges(storage, ranges)
   await recordUnsliced(deps, windowsOfFailedRanges(ranges, game.durationMs ?? 0))
+  resume(deps, orphanedRangeIndexes(ranges, deps.active), game.durationMs ?? 0)
   await settle(deps)
   if (readGame(storage.sql)?.status === "slicing") await storage.setAlarm(Date.now() + SLICING_CHECK_MS)
 }
