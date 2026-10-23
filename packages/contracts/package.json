@@ -1,0 +1,20 @@
+{
+  "name": "@strix/contracts",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@strix/domain": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "fast-check": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

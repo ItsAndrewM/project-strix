@@ -1,0 +1,26 @@
+import { defineConfig } from "oxfmt"
+
+export default defineConfig({
+  printWidth: 120,
+  semi: false,
+  sortImports: { newlinesBetween: false },
+  ignorePatterns: [
+    "**/*.md",
+    "apps/web/src/components/ui/**",
+    ".agent/**",
+    ".agents/**",
+    ".claude/**",
+    ".codex/**",
+    ".continue/**",
+    ".cursor/**",
+    ".gemini/**",
+    ".opencode/**",
+    ".pi/**",
+    ".roo/**",
+    ".superpowers/**",
+    ".windsurf/**",
+    "docs/**/assets/**",
+    "pnpm-lock.yaml",
+    "tools/oxlint/anti-slop/**",
+  ],
+})

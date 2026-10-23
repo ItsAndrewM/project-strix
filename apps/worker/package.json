@@ -1,0 +1,23 @@
+{
+  "name": "@strix/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "catalog:",
+    "@strix/contracts": "workspace:*",
+    "@strix/domain": "workspace:*",
+    "aws4fetch": "catalog:",
+    "effect": "catalog:",
+    "jose": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}
