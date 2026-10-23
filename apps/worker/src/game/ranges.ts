@@ -4,7 +4,8 @@
  * the windows it did not reach, like any window the slicer reports failed, are recorded as unsliced clips.
  * Requests (presigned URLs included) are built when a range begins, not when the game starts, so a range that waits
  * for a slot never carries expired URLs. Range records live in synchronous DO KV so concurrent ranges never lose an
- * update between a read and a write.
+ * update between a read and a write. Once the alarm has failed a range as timed out, whatever its job still reports
+ * is ignored: the game has settled on that failure and a late clip must not contradict it.
  */
 import type { Clip, Rendition } from "@strix/contracts"
 import { type Range, rangesFor, type Window } from "@strix/domain"
@@ -95,9 +96,13 @@ const recordUnsliced = async (deps: IngestDeps, windows: ReadonlyArray<Window>):
   await deps.publish(["clips", "game"])
 }
 
+const isRunning = (storage: DurableObjectStorage, index: number): boolean =>
+  readRanges(storage)[index]?.status === "running"
+
 const progressFor =
-  (deps: IngestDeps, range: Range) =>
+  (deps: IngestDeps, index: number, range: Range) =>
   async (progress: SliceProgress): Promise<void> => {
+    if (!isRunning(deps.ctx.storage, index)) return
     if (progress.kind === "clip") {
       await deps.clipReady(clipOf(windowOf(range, progress.index)))
     } else if (progress.kind === "failed") {
@@ -112,9 +117,10 @@ const runRange = async (deps: IngestDeps, index: number, range: Range): Promise<
   markRange(storage, index, "running")
   try {
     const slicer = await deps.slicer(index)
-    await slicer.slice(await sliceRequestFor(deps, range), progressFor(deps, range))
-    markRange(storage, index, "done")
+    await slicer.slice(await sliceRequestFor(deps, range), progressFor(deps, index, range))
+    if (isRunning(storage, index)) markRange(storage, index, "done")
   } catch (cause) {
+    if (!isRunning(storage, index)) return
     logRangeFailure(deps.gameId, index, cause)
     markRange(storage, index, "failed", rangeFailureReason(cause))
     await recordUnsliced(deps, range.windows)

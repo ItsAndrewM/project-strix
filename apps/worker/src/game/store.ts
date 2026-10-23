@@ -112,6 +112,12 @@ export const saveClip = (sql: SqlStorage, clip: Clip): void => {
   )
 }
 
+export const forgetClips = (sql: SqlStorage): void => {
+  sql.exec("DELETE FROM answers")
+  sql.exec("DELETE FROM events")
+  sql.exec("DELETE FROM clips")
+}
+
 export const saveUnslicedWindow = (sql: SqlStorage, window: Window): boolean =>
   sql.exec(
     `INSERT INTO clips (${CLIP_COLUMNS}) VALUES (?, ?, ?, ?, NULL, NULL, 'failed') ON CONFLICT(idx) DO NOTHING`,

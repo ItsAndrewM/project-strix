@@ -159,7 +159,7 @@ describe("POST /api/games/:id/source", () => {
     const { id } = await createGame()
     const messages = await listen(id)
     await postJson(`/api/games/${id}/source`, { url: SOURCE_URL })
-    await vi.waitFor(() => expect(messages).toEqual([changed("game"), changed("game")]))
+    await vi.waitFor(() => expect(messages).toEqual([changed("game", "clips", "events"), changed("game")]))
   })
 
   it("leaves a game whose probe fails failed with the reason, never probing", async () => {
@@ -489,6 +489,75 @@ describe("a slicer with no capacity", () => {
       failure: "no slicer capacity: try again in a few minutes",
     })
     expect(consoleError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ event: "range-failed", gameId: id }))
+  })
+})
+
+describe("a range whose job outlives the alarm", () => {
+  const timedOut: Ranges = {
+    0: { status: "failed", startedAt: Date.now() - RANGE_TIMEOUT_MS, reason: RANGE_TIMED_OUT },
+  }
+
+  const outlivedBy = (id: string, finish: (slicer: Slicer) => Slicer["slice"]) =>
+    runInDurableObject(env.GAME.getByName(id), async (instance, state) => {
+      const game = readGame(state.storage.sql)
+      if (game === undefined) throw new Error("the game was not created")
+      saveGame(state.storage.sql, { ...game, status: "slicing" })
+      queueRanges(state.storage, 1, Date.now())
+      const fixture = fixtureSlicer(env.BUCKET)
+      const late: Slicer = {
+        probe: (req) => fixture.probe(req),
+        slice: (req, onProgress) => {
+          state.storage.kv.put("ranges", timedOut)
+          return finish(fixture)(req, onProgress)
+        },
+      }
+      await runRanges(depsWith(instance, state, id, late), rangesFor(FIXTURE_DURATION_MS))
+    })
+
+  it("keeps the timed-out record and ignores the clips it reports late", async () => {
+    const id = await probed()
+    const sends = spySends()
+    await outlivedBy(id, (fixture) => fixture.slice)
+
+    expect(await rangesOf(id)).toEqual(timedOut)
+    expect(await clipsOf(id)).toEqual([])
+    expect(sends).not.toHaveBeenCalled()
+    expect(await gameOf(id)).toMatchObject({ status: "failed", failure: NO_CLIPS })
+  })
+
+  it("keeps the timed-out reason when the late job dies", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const id = await probed()
+    await outlivedBy(id, () => () => Promise.reject(new Error("container evicted")))
+
+    expect(await rangesOf(id)).toEqual(timedOut)
+    expect(await clipsOf(id)).toEqual([])
+    expect(consoleError).not.toHaveBeenCalled()
+  })
+})
+
+describe("re-sourcing a game that failed while slicing", () => {
+  it("forgets the previous attempt's clips and thumbnails, then slices the new source clean", async () => {
+    flags({ FIXTURES_FAIL_SLICE_AFTER: "0" })
+    vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const { id, sends } = await started()
+    expect(await settled(id)).toMatchObject({ status: "failed", counts: { clips: FIXTURE_WINDOWS.length } })
+    await env.BUCKET.put(`thumbs/${id}/0.jpg`, new Uint8Array([0xff]))
+    flags({ FIXTURES_FAIL_SLICE_AFTER: undefined })
+    const messages = await listen(id)
+
+    const response = await postJson(`/api/games/${id}/source`, { url: SOURCE_URL })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: "created", failure: null, counts: { clips: 0 } })
+    expect(await clipsOf(id)).toEqual([])
+    expect(await env.BUCKET.head(`thumbs/${id}/0.jpg`)).toBeNull()
+    await vi.waitFor(() => expect(messages[0]).toBe(changed("game", "clips", "events")))
+
+    expect((await postJson(`/api/games/${id}/start`, { crop: null })).status).toBe(200)
+    const game = await settled(id)
+    expect(game).toMatchObject({ status: "classifying", failure: null, counts: { clips: FIXTURE_WINDOWS.length } })
+    expect((await clipsOf(id)).map((clip) => clip.classification)).toEqual(FIXTURE_WINDOWS.map(() => "pending"))
+    expect(sends).toHaveBeenCalledTimes(FIXTURE_WINDOWS.length)
   })
 })
 

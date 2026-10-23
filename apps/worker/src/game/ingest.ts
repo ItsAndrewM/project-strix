@@ -2,8 +2,9 @@
  * Ingest: a game's source is probed within the request, so the answer already carries the duration (or the failure).
  * Each probe is an attempt recorded under `probe` in DO KV with an alarm at its deadline: a probe that hangs, or dies
  * with an evicted DO, is failed by the alarm, and only the attempt still recorded may settle the game, so a late probe
- * never overwrites a newer source or a timed-out game. Starting queues every range and returns while the ranges slice
- * in the background, six at a time (see ranges.ts).
+ * never overwrites a newer source or a timed-out game. Setting a source forgets everything a previous attempt
+ * recorded (clips, events, answers, cached thumbnails), so a game re-sourced after a failed slice starts clean.
+ * Starting queues every range and returns while the ranges slice in the background, six at a time (see ranges.ts).
  */
 import { type Clip, type Crop, type Game, type GameStatus, InvalidInput, NotFound } from "@strix/contracts"
 import { rangesFor } from "@strix/domain"
@@ -13,7 +14,7 @@ import type { Urls } from "../r2/presign.ts"
 import type { Slicer } from "../slicer/slicer.ts"
 import type { Publish } from "./publish.ts"
 import { queueRanges, runRanges, SLICING_CHECK_MS } from "./ranges.ts"
-import { changeGame, readGame } from "./store.ts"
+import { changeGame, forgetClips, readGame } from "./store.ts"
 
 export interface IngestDeps {
   readonly ctx: DurableObjectState
@@ -38,7 +39,21 @@ const PROBE_FRAME_AT_MS = 300_000
 
 const SOURCE_SETTABLE: ReadonlySet<GameStatus> = new Set(["created", "probing", "failed"])
 
-export const probeKey = (gameId: string): string => `thumbs/${gameId}/probe.jpg`
+const thumbsPrefix = (gameId: string): string => `thumbs/${gameId}/`
+
+export const probeKey = (gameId: string): string => `${thumbsPrefix(gameId)}probe.jpg`
+
+const clearPrefix = async (bucket: R2Bucket, prefix: string): Promise<void> => {
+  const listed = await bucket.list({ prefix })
+  if (listed.objects.length === 0) return
+  await bucket.delete(listed.objects.map((object) => object.key))
+  if (listed.truncated) await clearPrefix(bucket, prefix)
+}
+
+const forgetAttempt = async (deps: IngestDeps): Promise<void> => {
+  forgetClips(deps.ctx.storage.sql)
+  await clearPrefix(deps.env.BUCKET, thumbsPrefix(deps.gameId))
+}
 
 const invalid = (path: string) => new InvalidInput({ fieldErrors: [{ path, issue: "invalid" }] })
 
@@ -82,6 +97,7 @@ export const setSource = async (deps: IngestDeps, url: string): Promise<Game> =>
   if (!isWebUrl(url)) throw invalid("url")
   const { storage } = deps.ctx
   if (!SOURCE_SETTABLE.has(existingGame(storage.sql).status)) throw invalid("status")
+  await forgetAttempt(deps)
   const attempt: ProbeAttempt = { id: crypto.randomUUID(), probingSince: Date.now() }
   storage.kv.put(PROBE_KEY, attempt)
   changeGame(storage.sql, (game) => ({
@@ -92,7 +108,7 @@ export const setSource = async (deps: IngestDeps, url: string): Promise<Game> =>
     durationMs: null,
   }))
   await storage.setAlarm(attempt.probingSince + PROBE_TIMEOUT_MS)
-  await deps.publish(["game"])
+  await deps.publish(["game", "clips", "events"])
   const probed = await probe(deps, url, attempt)
   await deps.publish(["game"])
   return probed

@@ -3,6 +3,7 @@ import { env, runInDurableObject } from "cloudflare:test"
 import { describe, expect, it } from "vitest"
 import {
   countsOf,
+  forgetClips,
   markClassification,
   mergedEventsOf,
   readAnswers,
@@ -246,5 +247,33 @@ describe("the game store", () => {
       return countsOf(sql)
     })
     expect(counts).toEqual({ clips: 0, classified: 0, events: 0, drafts: 0, needs: 0 })
+  })
+})
+
+describe("forgetClips", () => {
+  it("drops every clip, answer and event, leaving the game row", async () => {
+    const game = gameAt("store-forget", Date.UTC(2026, 9, 21))
+    const after = await inGame("store-forget", (sql) => {
+      saveGame(sql, game)
+      saveClip(sql, clipAt(0))
+      saveUnslicedWindow(sql, { index: 1, startMs: 10_000, durationMs: 10_000 })
+      saveAnswer(sql, 0, 1, 0, response)
+      saveEvents(sql, [eventOf("kept", 0, "accepted", []), eventOf("machine", 0, "auto", [])])
+      forgetClips(sql)
+      return {
+        clips: readClips(sql),
+        answers: readAnswers(sql, 0),
+        events: readEvents(sql),
+        counts: countsOf(sql),
+        game: readGame(sql),
+      }
+    })
+    expect(after).toEqual({
+      clips: [],
+      answers: [],
+      events: [],
+      counts: { clips: 0, classified: 0, events: 0, drafts: 0, needs: 0 },
+      game,
+    })
   })
 })
