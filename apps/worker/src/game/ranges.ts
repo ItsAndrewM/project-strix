@@ -12,7 +12,9 @@
  * reset recycles its container, hands its range back to the queue for the alarm to resume, up to `MAX_RANGE_ATTEMPTS`
  * jobs per range; only then is the range failed, and a range that goes quiet for `RANGE_TIMEOUT_MS` is retried the
  * same way. Claiming a range numbers the job with the range's attempt count, and a job acts on its range only while
- * its number is current, so a job the alarm gave up on cannot clobber its successor. The alarm decides what to resume
+ * its number is current, so a job the alarm gave up on cannot clobber its successor; its `active` entry likewise stays
+ * until that job returns or a successor replaces it, so a stalled job keeps its slot counted against the game's
+ * concurrency and never frees a successor's entry. The alarm decides what to resume
  * from a read it takes with no await before the requeue, so it never resurrects a range the slot loop has just
  * claimed. A range's job is sent to the slicer of its slot, so a
  * game never asks for more containers than it runs ranges at once. Every window a job reports touches the range's
@@ -22,7 +24,7 @@ import type { Clip, Rendition } from "@strix/contracts"
 import { type Range, rangesFor, type Window } from "@strix/domain"
 import { logRangeFailure, logRangeResumed, logRangeRetry, logWindowFailure } from "../logs.ts"
 import type { SliceProgress, SliceRequest, SliceWindow } from "../slicer/protocol.ts"
-import type { IngestDeps } from "./ingest.ts"
+import type { ActiveJob, IngestDeps } from "./ingest.ts"
 import {
   failedRangeIndexes,
   failureAfterRanges,
@@ -173,8 +175,8 @@ const sliceRange = async (deps: IngestDeps, { index, attempt, slot }: Claim, ran
   }
 }
 
-const freeSlot = (active: ReadonlyMap<number, number>): number => {
-  const taken = new Set(active.values())
+const freeSlot = (active: ReadonlyMap<number, ActiveJob>): number => {
+  const taken = new Set([...active.values()].map((job) => job.slot))
   return (
     Array.from({ length: CONCURRENT_RANGES }, (_, slot) => slot).find((slot) => !taken.has(slot)) ?? CONCURRENT_RANGES
   )
@@ -185,11 +187,11 @@ const runRange = async (deps: IngestDeps, index: number, range: Range): Promise<
   if (readRanges(storage)[index]?.status !== "queued") return
   const attempt = claimRange(storage, index)
   const slot = freeSlot(deps.active)
-  deps.active.set(index, slot)
+  deps.active.set(index, { slot, attempt })
   try {
     await sliceRange(deps, { index, attempt, slot }, range)
   } finally {
-    deps.active.delete(index)
+    if (deps.active.get(index)?.attempt === attempt) deps.active.delete(index)
   }
 }
 
@@ -251,7 +253,6 @@ const retryStalled = (deps: IngestDeps, now: number): void => {
     if (attempt >= MAX_RANGE_ATTEMPTS) continue
     logRangeRetry(deps.gameId, index, attempt, RANGE_TIMED_OUT)
     markRange(storage, index, "queued")
-    deps.active.delete(index)
   }
 }
 

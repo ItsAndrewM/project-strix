@@ -16,6 +16,11 @@ import type { Publish } from "./publish.ts"
 import { queueRanges, runRanges, SLICING_CHECK_MS } from "./ranges.ts"
 import { changeGame, forgetClips, readGame } from "./store.ts"
 
+export interface ActiveJob {
+  readonly slot: number
+  readonly attempt: number
+}
+
 export interface IngestDeps {
   readonly ctx: DurableObjectState
   readonly env: Env
@@ -24,7 +29,7 @@ export interface IngestDeps {
   readonly slicer: (slot: number) => Promise<Slicer>
   readonly urls: Urls
   readonly clipReady: (clip: Clip) => Promise<void>
-  readonly active: Map<number, number>
+  readonly active: Map<number, ActiveJob>
 }
 
 export interface ProbeAttempt {

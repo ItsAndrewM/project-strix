@@ -418,7 +418,7 @@ describe("the slicing alarm", () => {
       const claim = () => {
         const current = state.storage.kv.get<Ranges>("ranges") ?? {}
         state.storage.kv.put("ranges", { ...current, 1: { status: "running", startedAt: Date.now(), attempts: 1 } })
-        instance.active.set(1, 0)
+        instance.active.set(1, { slot: 0, attempt: 1 })
       }
       const deps: IngestDeps = {
         ...depsWith(instance, state, id, fixtureSlicer(env.BUCKET)),
@@ -429,6 +429,27 @@ describe("the slicing alarm", () => {
 
     expect(await rangesOf(id)).toMatchObject({ 0: { status: "failed" }, 1: { status: "running", attempts: 1 } })
     expect(consoleWarn).not.toHaveBeenCalledWith(expect.objectContaining({ event: "range-resumed", rangeIndex: 1 }))
+  })
+
+  it("lets a stalled job that finally returns leave its successor's active entry alone", async () => {
+    const id = await probed()
+    spySends()
+    await runInDurableObject(env.GAME.getByName(id), async (instance, state) => {
+      const game = readGame(state.storage.sql)
+      if (game === undefined) throw new Error("the game was not created")
+      saveGame(state.storage.sql, { ...game, status: "slicing" })
+      queueRanges(state.storage, 1, Date.now())
+      const overtaken: Slicer = {
+        probe: () => Promise.reject(new Error("not probed here")),
+        slice: async (_req, onProgress) => {
+          instance.active.set(0, { slot: 1, attempt: 2 })
+          await onProgress({ kind: "done" })
+        },
+      }
+      await runRanges(depsWith(instance, state, id, overtaken), rangesFor(FIXTURE_DURATION_MS))
+      expect([...instance.active.entries()]).toEqual([[0, { slot: 1, attempt: 2 }]])
+      instance.active.delete(0)
+    })
   })
 
   it("ignores what a job reports once the alarm has given its range to a new job", async () => {
@@ -458,7 +479,7 @@ describe("the slicing alarm", () => {
   it("keeps slicing and re-arms while a range's job is still active in this instance", async () => {
     const id = await slicing({ 0: { status: "running", startedAt: Date.now() } }, 0)
     const sends = spySends()
-    await runInDurableObject(env.GAME.getByName(id), (instance) => instance.active.set(0, 0))
+    await runInDurableObject(env.GAME.getByName(id), (instance) => instance.active.set(0, { slot: 0, attempt: 1 }))
 
     await runDurableObjectAlarm(env.GAME.getByName(id))
     expect(await gameOf(id)).toMatchObject({ status: "slicing" })
