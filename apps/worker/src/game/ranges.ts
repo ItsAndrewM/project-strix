@@ -6,9 +6,11 @@
  * for a slot never carries expired URLs. Range records live in synchronous DO KV so concurrent ranges never lose an
  * update between a read and a write. Once the alarm has failed a range as timed out, whatever its job still reports
  * is ignored: the game has settled on that failure and a late clip must not contradict it.
- * The jobs running in this instance are tracked in `deps.active`; a reset or eviction empties it while the records
- * still say running, so the alarm resumes those ranges (and the queued ones once nothing is active), slicing only the
- * windows that have no clip yet.
+ * The jobs running in this instance are tracked in `deps.active`, range index to concurrency slot; a reset or eviction
+ * empties it while the records still say running, so the alarm resumes those ranges (and the queued ones once nothing
+ * is active), slicing only the windows that have no clip yet. A range's job is sent to the slicer of its slot, so a
+ * game never asks for more containers than it runs ranges at once. Every window a job reports touches the range's
+ * `progressAt`, which is what the timeout watches.
  */
 import type { Clip, Rendition } from "@strix/contracts"
 import { type Range, rangesFor, type Window } from "@strix/domain"
@@ -106,10 +108,17 @@ const recordUnsliced = async (deps: IngestDeps, windows: ReadonlyArray<Window>):
 const isRunning = (storage: DurableObjectStorage, index: number): boolean =>
   readRanges(storage)[index]?.status === "running"
 
+const touchRange = (storage: DurableObjectStorage, index: number): void => {
+  const ranges = readRanges(storage)
+  const record = ranges[index]
+  if (record !== undefined) writeRanges(storage, { ...ranges, [index]: { ...record, progressAt: Date.now() } })
+}
+
 const progressFor =
   (deps: IngestDeps, index: number, range: Range) =>
   async (progress: SliceProgress): Promise<void> => {
     if (!isRunning(deps.ctx.storage, index)) return
+    touchRange(deps.ctx.storage, index)
     if (progress.kind === "clip") {
       await deps.clipReady(clipOf(windowOf(range, progress.index)))
     } else if (progress.kind === "failed") {
@@ -118,11 +127,11 @@ const progressFor =
     }
   }
 
-const sliceRange = async (deps: IngestDeps, index: number, range: Range): Promise<void> => {
+const sliceRange = async (deps: IngestDeps, index: number, slot: number, range: Range): Promise<void> => {
   const { storage } = deps.ctx
   try {
     if (range.windows.length > 0) {
-      const slicer = await deps.slicer(index)
+      const slicer = await deps.slicer(slot)
       await slicer.slice(await sliceRequestFor(deps, range), progressFor(deps, index, range))
     }
     if (isRunning(storage, index)) markRange(storage, index, "done")
@@ -134,13 +143,21 @@ const sliceRange = async (deps: IngestDeps, index: number, range: Range): Promis
   }
 }
 
+const freeSlot = (active: ReadonlyMap<number, number>): number => {
+  const taken = new Set(active.values())
+  return (
+    Array.from({ length: CONCURRENT_RANGES }, (_, slot) => slot).find((slot) => !taken.has(slot)) ?? CONCURRENT_RANGES
+  )
+}
+
 const runRange = async (deps: IngestDeps, index: number, range: Range): Promise<void> => {
   const { storage } = deps.ctx
   if (readRanges(storage)[index]?.status !== "queued") return
   markRange(storage, index, "running")
-  deps.active.add(index)
+  const slot = freeSlot(deps.active)
+  deps.active.set(index, slot)
   try {
-    await sliceRange(deps, index, range)
+    await sliceRange(deps, index, slot, range)
   } finally {
     deps.active.delete(index)
   }
@@ -202,7 +219,7 @@ export const checkRanges = async (deps: IngestDeps): Promise<void> => {
   const ranges = timeOutRanges(readRanges(storage), Date.now())
   writeRanges(storage, ranges)
   await recordUnsliced(deps, windowsOfFailedRanges(ranges, game.durationMs ?? 0))
-  resume(deps, orphanedRangeIndexes(ranges, deps.active), game.durationMs ?? 0)
+  resume(deps, orphanedRangeIndexes(ranges, new Set(deps.active.keys())), game.durationMs ?? 0)
   await settle(deps)
   if (readGame(storage.sql)?.status === "slicing") await storage.setAlarm(Date.now() + SLICING_CHECK_MS)
 }

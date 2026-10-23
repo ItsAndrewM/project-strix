@@ -105,6 +105,14 @@ describe("timeOutRanges", () => {
     expect(timeOutRanges(ranges, NOW)).toEqual(ranges)
   })
 
+  it("measures the 30 minutes from the last window the job reported, not from its start", () => {
+    const longAgo = NOW - RANGE_TIMEOUT_MS * 3
+    const ranges: Ranges = { 0: { ...at("running", longAgo), progressAt: NOW - 60_000 } }
+    expect(timeOutRanges(ranges, NOW)).toEqual(ranges)
+    const quiet: Ranges = { 0: { ...at("running", longAgo), progressAt: NOW - RANGE_TIMEOUT_MS - 1 } }
+    expect(timeOutRanges(quiet, NOW)).toEqual({ 0: { ...quiet[0], status: "failed", reason: RANGE_TIMED_OUT } })
+  })
+
   it("leaves queued ranges to be resumed, however long they have waited", () => {
     const stalled = NOW - RANGE_TIMEOUT_MS - 1
     const ranges: Ranges = { 0: at("running", stalled), 1: at("queued", NOW - RANGE_TIMEOUT_MS * 2), 2: at("done") }

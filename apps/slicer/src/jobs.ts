@@ -1,7 +1,8 @@
 /**
- * Every job runs under a time budget that ends before the worker's own alarm gives up on it (five minutes for a probe,
- * thirty for a range), so an ffmpeg that stalls on a hung read is killed and its container slot freed instead of
- * being held until the container is recycled. Each ffmpeg or ffprobe gets whatever of the job's budget remains.
+ * Every ffmpeg or ffprobe runs under its own time budget, so one that stalls on a hung read is killed and its container
+ * slot freed instead of being held until the container is recycled. The budget is per process, not per job: a window
+ * encodes in about a minute on one vCPU, so a range of twenty-four takes longer than any sane job budget, and the
+ * worker times a range out on missing progress rather than on total time.
  */
 import { spawn } from "node:child_process"
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
@@ -36,7 +37,7 @@ type Sizes = Extract<SliceProgress, { kind: "clip" }>["bytes"]
 export const reasonOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
 
 export const PROBE_BUDGET_MS = 4 * 60_000
-export const SLICE_BUDGET_MS = 28 * 60_000
+export const WINDOW_BUDGET_MS = 10 * 60_000
 
 const exitError = (command: string, code: number | null, stderr: readonly Buffer[]): Error =>
   new Error(`${command} exited ${code}: ${Buffer.concat(stderr).toString("utf8").trim().slice(-500)}`)
@@ -79,18 +80,8 @@ export async function runProbe(req: ProbeRequest): Promise<ProbeResult> {
   return { ...facts, frameJpegBase64: frame.toString("base64") }
 }
 
-interface Job {
-  readonly req: SliceRequest
-  readonly deadline: number
-}
-
-const encode = async (
-  { req, deadline }: Job,
-  window: SliceWindow,
-  outDir: string,
-  caps: BitrateCaps,
-): Promise<Sizes> => {
-  await run("ffmpeg", sliceArgs(req.source, window, req.crop, outDir, caps), deadline)
+const encode = async (req: SliceRequest, window: SliceWindow, outDir: string, caps: BitrateCaps): Promise<Sizes> => {
+  await run("ffmpeg", sliceArgs(req.source, window, req.crop, outDir, caps), Date.now() + WINDOW_BUDGET_MS)
   const sizeOf = async (rendition: Rendition) => (await stat(outputPath(outDir, window.index, rendition))).size
   const [model480, model720, view] = await Promise.all([sizeOf("model-480"), sizeOf("model-720"), sizeOf("view")])
   return { "model-480": model480, "model-720": model720, view }
@@ -112,19 +103,19 @@ const upload = async (window: SliceWindow, outDir: string): Promise<string | nul
   return null
 }
 
-const sliceInto = async (job: Job, window: SliceWindow, outDir: string): Promise<SliceProgress> => {
-  const first = await encode(job, window, outDir, FULL_CAPS)
-  const sizes = oversized(first) ? await encode(job, window, outDir, HALF_CAPS) : first
+const sliceInto = async (req: SliceRequest, window: SliceWindow, outDir: string): Promise<SliceProgress> => {
+  const first = await encode(req, window, outDir, FULL_CAPS)
+  const sizes = oversized(first) ? await encode(req, window, outDir, HALF_CAPS) : first
   if (oversized(sizes)) return { kind: "failed", index: window.index, reason: "rendition over 14 MiB after re-encode" }
   const uploadFailure = await upload(window, outDir)
   if (uploadFailure !== null) return { kind: "failed", index: window.index, reason: uploadFailure }
   return { kind: "clip", index: window.index, bytes: sizes }
 }
 
-const sliceWindow = async (job: Job, window: SliceWindow): Promise<SliceProgress> => {
+const sliceWindow = async (req: SliceRequest, window: SliceWindow): Promise<SliceProgress> => {
   const outDir = await mkdtemp(join(tmpdir(), `strix-${window.index}-`))
   try {
-    return await sliceInto(job, window, outDir)
+    return await sliceInto(req, window, outDir)
   } catch (cause) {
     return { kind: "failed", index: window.index, reason: reasonOf(cause) }
   } finally {
@@ -133,10 +124,9 @@ const sliceWindow = async (job: Job, window: SliceWindow): Promise<SliceProgress
 }
 
 export async function runSlice(req: SliceRequest, emit: (p: SliceProgress) => void): Promise<void> {
-  const job: Job = { req, deadline: Date.now() + SLICE_BUDGET_MS }
-  await probeFacts(req.source, job.deadline)
+  await probeFacts(req.source, Date.now() + PROBE_BUDGET_MS)
   for (const window of req.windows) {
-    emit(await sliceWindow(job, window))
+    emit(await sliceWindow(req, window))
   }
   emit({ kind: "done" })
 }

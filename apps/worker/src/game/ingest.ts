@@ -21,10 +21,10 @@ export interface IngestDeps {
   readonly env: Env
   readonly gameId: string
   readonly publish: Publish
-  readonly slicer: (rangeIndex: number) => Promise<Slicer>
+  readonly slicer: (slot: number) => Promise<Slicer>
   readonly urls: Urls
   readonly clipReady: (clip: Clip) => Promise<void>
-  readonly active: Set<number>
+  readonly active: Map<number, number>
 }
 
 export interface ProbeAttempt {

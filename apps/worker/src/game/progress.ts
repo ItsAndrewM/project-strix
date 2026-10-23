@@ -1,7 +1,8 @@
 /**
  * Slicing progress, kept per range in the game's DO storage. A range is `queued` until a slot of the runner picks it
  * up, `running` while its slice job streams, then `done` or `failed` (with the reason). `startedAt` is when it last
- * changed to queued or running. A range running past `RANGE_TIMEOUT_MS` is presumed dead. A range recorded as running
+ * changed to queued or running and `progressAt` when its job last reported a window, so a range that goes
+ * `RANGE_TIMEOUT_MS` without progress is presumed dead however long it has run in total. A range recorded as running
  * whose job is not active in this instance was orphaned by a reset or eviction, as were the queued ranges once nothing
  * is active; the alarm resumes those (see ranges.ts) instead of failing them.
  *
@@ -16,6 +17,7 @@ export type RangeStatus = "queued" | "running" | "done" | "failed"
 export interface RangeRecord {
   readonly status: RangeStatus
   readonly startedAt: number
+  readonly progressAt?: number
   readonly reason?: string
 }
 
@@ -75,10 +77,13 @@ const isQueued = (record: RangeRecord): boolean => record.status === "queued"
 
 const isRunning = (record: RangeRecord): boolean => record.status === "running"
 
+const stalled = (record: RangeRecord, now: number): boolean =>
+  isRunning(record) && now - (record.progressAt ?? record.startedAt) > RANGE_TIMEOUT_MS
+
 export const timeOutRanges = (ranges: Ranges, now: number): Ranges =>
   mapRanges(
     ranges,
-    failedIf((record) => isRunning(record) && now - record.startedAt > RANGE_TIMEOUT_MS),
+    failedIf((record) => stalled(record, now)),
   )
 
 export const orphanedRangeIndexes = (ranges: Ranges, active: ReadonlySet<number>): ReadonlyArray<number> =>
