@@ -14,10 +14,17 @@
   },
   "vars": {
     "ACCESS_TEAM_DOMAIN": "https://misty-wildflower-0505.cloudflareaccess.com",
-    "ACCESS_AUD": "",
+    "ACCESS_AUD": "a0dfb80eb4aab6305488f3db6a2c0ec011c58f898cbb5a0a797f4e3075b056e4",
     "R2_ENDPOINT": "https://6624f09210327baade61004af0d9be84.r2.cloudflarestorage.com",
   },
-  "d1_databases": [{ "binding": "DB", "database_name": "strix", "database_id": "", "migrations_dir": "migrations" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "strix",
+      "database_id": "465a3b9c-c0b4-4cb2-bf27-f9576b79fea7",
+      "migrations_dir": "migrations",
+    },
+  ],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "strix" }],
   "ai": { "binding": "AI" },
   "media": { "binding": "MEDIA" },
