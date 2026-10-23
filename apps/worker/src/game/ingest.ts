@@ -24,6 +24,7 @@ export interface IngestDeps {
   readonly slicer: (rangeIndex: number) => Promise<Slicer>
   readonly urls: Urls
   readonly clipReady: (clip: Clip) => Promise<void>
+  readonly active: Set<number>
 }
 
 export interface ProbeAttempt {

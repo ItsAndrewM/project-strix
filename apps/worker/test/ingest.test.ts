@@ -95,6 +95,7 @@ const depsWith = (instance: GameDO, state: DurableObjectState, gameId: string, s
   slicer: async () => slicer,
   urls: urlsFor(env),
   clipReady: (clip) => instance.clipReady(clip),
+  active: instance.active,
 })
 
 const slicedBy = async (id: string, slicer: Slicer): Promise<void> => {
@@ -354,12 +355,64 @@ describe("the slicing alarm", () => {
     expect(await gameOf(id)).toMatchObject({ status: "failed", failure: NO_CLIPS })
   })
 
-  it("keeps slicing and re-arms while a range is still within its time", async () => {
+  it("keeps slicing and re-arms while a range's job is still active in this instance", async () => {
     const id = await slicing({ 0: { status: "running", startedAt: Date.now() } }, 0)
+    const sends = spySends()
+    await runInDurableObject(env.GAME.getByName(id), (instance) => instance.active.add(0))
 
     await runDurableObjectAlarm(env.GAME.getByName(id))
     expect(await gameOf(id)).toMatchObject({ status: "slicing" })
+    expect(await rangesOf(id)).toMatchObject({ 0: { status: "running" } })
+    expect(sends).not.toHaveBeenCalled()
     expect(await alarmOf(id)).not.toBeNull()
+    await runInDurableObject(env.GAME.getByName(id), (instance) => instance.active.delete(0))
+  })
+
+  it("resumes a running range whose job was lost with the instance, slicing only the windows it had not recorded", async () => {
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+    const sends = spySends()
+    const id = await slicing({ 0: { status: "running", startedAt: Date.now() - 60_000 } }, 1)
+
+    await runDurableObjectAlarm(env.GAME.getByName(id))
+    const game = await settled(id)
+
+    expect(game).toMatchObject({ status: "classifying", failure: null, counts: { clips: FIXTURE_WINDOWS.length } })
+    expect((await clipsOf(id)).map((clip) => [clip.index, clip.classification, clip.renditions.length])).toEqual(
+      FIXTURE_WINDOWS.map(({ index }) => [index, "pending", 3]),
+    )
+    expect(sends.mock.calls.map(([job]) => job.clipIndex)).toEqual([1, 2])
+    expect(await rangesOf(id)).toEqual({ 0: { status: "done", startedAt: expect.any(Number) } })
+    expect(consoleWarn).toHaveBeenCalledExactlyOnceWith({
+      event: "range-resumed",
+      gameId: id,
+      rangeIndex: 0,
+      windows: 2,
+    })
+  })
+
+  it("resumes the queued ranges once nothing is active", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined)
+    const sends = spySends()
+    const id = await slicing({ 0: { status: "queued", startedAt: Date.now() - RANGE_TIMEOUT_MS * 2 } }, 0)
+
+    await runDurableObjectAlarm(env.GAME.getByName(id))
+    const game = await settled(id)
+
+    expect(game).toMatchObject({ status: "classifying", failure: null, counts: { clips: FIXTURE_WINDOWS.length } })
+    expect(sends).toHaveBeenCalledTimes(FIXTURE_WINDOWS.length)
+  })
+
+  it("marks a resumed range done without a slicer when every window already has its clip", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined)
+    const sends = spySends()
+    const id = await slicing({ 0: { status: "running", startedAt: Date.now() } }, FIXTURE_WINDOWS.length)
+
+    await runDurableObjectAlarm(env.GAME.getByName(id))
+    const game = await settled(id)
+
+    expect(game).toMatchObject({ status: "classifying", failure: null })
+    expect(await rangesOf(id)).toEqual({ 0: { status: "done", startedAt: expect.any(Number) } })
+    expect(sends).not.toHaveBeenCalled()
   })
 })
 

@@ -136,6 +136,14 @@ export const sliceCountsOf = (sql: SqlStorage): SliceCounts =>
     )
     .one()
 
+export const slicedIndexes = (sql: SqlStorage): ReadonlySet<number> =>
+  new Set(
+    sql
+      .exec<{ idx: number }>("SELECT idx FROM clips WHERE json_array_length(renditions) > 0")
+      .toArray()
+      .map(({ idx }) => idx),
+  )
+
 export const readClips = (sql: SqlStorage): ReadonlyArray<Clip> =>
   sql.exec<ClipRow>(`SELECT ${CLIP_COLUMNS} FROM clips ORDER BY idx`).toArray().map(clipOf)
 

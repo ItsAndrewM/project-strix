@@ -4,6 +4,7 @@ import {
   failureAfterRanges,
   NO_CAPACITY,
   NO_CLIPS,
+  orphanedRangeIndexes,
   RANGE_TIMED_OUT,
   type RangeRecord,
   type Ranges,
@@ -104,17 +105,24 @@ describe("timeOutRanges", () => {
     expect(timeOutRanges(ranges, NOW)).toEqual(ranges)
   })
 
-  it("keeps queued ranges while another range runs", () => {
-    const ranges: Ranges = { 0: at("running"), 1: at("queued", NOW - RANGE_TIMEOUT_MS * 2) }
-    expect(timeOutRanges(ranges, NOW)).toEqual(ranges)
+  it("leaves queued ranges to be resumed, however long they have waited", () => {
+    const stalled = NOW - RANGE_TIMEOUT_MS - 1
+    const ranges: Ranges = { 0: at("running", stalled), 1: at("queued", NOW - RANGE_TIMEOUT_MS * 2), 2: at("done") }
+    expect(timeOutRanges(ranges, NOW)).toEqual({ ...ranges, 0: failedFor(RANGE_TIMED_OUT, stalled) })
+  })
+})
+
+describe("orphanedRangeIndexes", () => {
+  it("names the running ranges whose job is not active in this instance", () => {
+    const ranges: Ranges = { 0: at("running"), 1: at("running"), 2: at("done"), 3: at("failed") }
+    expect(orphanedRangeIndexes(ranges, new Set([1]))).toEqual([0])
   })
 
-  it("fails queued ranges once nothing runs to start them", () => {
-    const stalled = NOW - RANGE_TIMEOUT_MS - 1
-    expect(timeOutRanges({ 0: at("running", stalled), 1: at("queued"), 2: at("done") }, NOW)).toEqual({
-      0: failedFor(RANGE_TIMED_OUT, stalled),
-      1: failedFor(RANGE_TIMED_OUT),
-      2: at("done"),
-    })
+  it("names the queued ranges too once nothing is active", () => {
+    expect(orphanedRangeIndexes({ 0: at("running"), 1: at("queued") }, new Set())).toEqual([0, 1])
+  })
+
+  it("leaves queued ranges to the running slot loop while anything is active", () => {
+    expect(orphanedRangeIndexes({ 0: at("running"), 1: at("queued") }, new Set([0]))).toEqual([])
   })
 })
