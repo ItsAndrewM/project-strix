@@ -7,21 +7,25 @@
  * update between a read and a write. Once the alarm has failed a range as timed out, whatever its job still reports
  * is ignored: the game has settled on that failure and a late clip must not contradict it.
  * The jobs running in this instance are tracked in `deps.active`, range index to concurrency slot; a reset or eviction
- * empties it while the records still say running, so the alarm resumes those ranges (and the queued ones once nothing
- * is active), slicing only the windows that have no clip yet. A range's job is sent to the slicer of its slot, so a
+ * empties it while the records still say running, so the alarm resumes those ranges (and the queued ones whenever a
+ * slot is free), slicing only the windows that have no clip yet. A job that dies, as every job does when a rollout or
+ * reset recycles its container, hands its range back to the queue for the alarm to resume, up to `MAX_RANGE_ATTEMPTS`
+ * jobs per range; only then is the range failed. A range's job is sent to the slicer of its slot, so a
  * game never asks for more containers than it runs ranges at once. Every window a job reports touches the range's
  * `progressAt`, which is what the timeout watches.
  */
 import type { Clip, Rendition } from "@strix/contracts"
 import { type Range, rangesFor, type Window } from "@strix/domain"
-import { logRangeFailure, logRangeResumed, logWindowFailure } from "../logs.ts"
+import { logRangeFailure, logRangeResumed, logRangeRetry, logWindowFailure } from "../logs.ts"
 import type { SliceProgress, SliceRequest, SliceWindow } from "../slicer/protocol.ts"
 import type { IngestDeps } from "./ingest.ts"
 import {
   failedRangeIndexes,
   failureAfterRanges,
+  MAX_RANGE_ATTEMPTS,
   orphanedRangeIndexes,
   rangeFailureReason,
+  type RangeRecord,
   type RangeStatus,
   type Ranges,
   statusAfterRanges,
@@ -52,13 +56,15 @@ export const queueRanges = (storage: DurableObjectStorage, count: number, now: n
 
 const markRange = (storage: DurableObjectStorage, index: number, status: RangeStatus, reason?: string): void => {
   const ranges = readRanges(storage)
+  const previous = ranges[index]
   const restarted = status === "running" || status === "queued"
-  const startedAt = restarted ? Date.now() : (ranges[index]?.startedAt ?? Date.now())
-  writeRanges(storage, {
-    ...ranges,
-    [index]: reason === undefined ? { status, startedAt } : { status, startedAt, reason },
-  })
+  const startedAt = restarted ? Date.now() : (previous?.startedAt ?? Date.now())
+  const attempts = (previous?.attempts ?? 0) + (status === "running" ? 1 : 0)
+  const record: RangeRecord = attempts > 0 ? { status, startedAt, attempts } : { status, startedAt }
+  writeRanges(storage, { ...ranges, [index]: reason === undefined ? record : { ...record, reason } })
 }
+
+const attemptsOf = (storage: DurableObjectStorage, index: number): number => readRanges(storage)[index]?.attempts ?? 1
 
 const putsFor = async (deps: IngestDeps, index: number): Promise<SliceWindow["puts"]> => {
   const put = (rendition: Rendition) => deps.urls.put(`clips/${deps.gameId}/${index}/${rendition}.mp4`)
@@ -137,6 +143,12 @@ const sliceRange = async (deps: IngestDeps, index: number, slot: number, range: 
     if (isRunning(storage, index)) markRange(storage, index, "done")
   } catch (cause) {
     if (!isRunning(storage, index)) return
+    const attempt = attemptsOf(storage, index)
+    if (attempt < MAX_RANGE_ATTEMPTS) {
+      logRangeRetry(deps.gameId, index, attempt, cause)
+      markRange(storage, index, "queued")
+      return
+    }
     logRangeFailure(deps.gameId, index, cause)
     markRange(storage, index, "failed", rangeFailureReason(cause))
     await recordUnsliced(deps, range.windows)
@@ -219,7 +231,7 @@ export const checkRanges = async (deps: IngestDeps): Promise<void> => {
   const ranges = timeOutRanges(readRanges(storage), Date.now())
   writeRanges(storage, ranges)
   await recordUnsliced(deps, windowsOfFailedRanges(ranges, game.durationMs ?? 0))
-  resume(deps, orphanedRangeIndexes(ranges, new Set(deps.active.keys())), game.durationMs ?? 0)
+  resume(deps, orphanedRangeIndexes(ranges, new Set(deps.active.keys()), CONCURRENT_RANGES), game.durationMs ?? 0)
   await settle(deps)
   if (readGame(storage.sql)?.status === "slicing") await storage.setAlarm(Date.now() + SLICING_CHECK_MS)
 }

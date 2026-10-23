@@ -29,6 +29,10 @@ export const logRangeFailure = (gameId: string, rangeIndex: number, cause: unkno
   console.error({ event: "range-failed", gameId, rangeIndex, cause: messageOf(cause) })
 }
 
+export const logRangeRetry = (gameId: string, rangeIndex: number, attempt: number, cause: unknown): void => {
+  console.warn({ event: "range-retried", gameId, rangeIndex, attempt, cause: messageOf(cause) })
+}
+
 export const logRangeResumed = (gameId: string, rangeIndex: number, windows: number): void => {
   console.warn({ event: "range-resumed", gameId, rangeIndex, windows })
 }
