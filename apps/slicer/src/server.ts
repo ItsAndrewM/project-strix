@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { text } from "node:stream/consumers"
+import { abortOnDisconnect } from "./disconnect.ts"
 import { reasonOf, runProbe, runSlice } from "./jobs.ts"
 import {
   decodeProbeRequest,
@@ -43,7 +44,7 @@ const slice = async (req: IncomingMessage, res: ServerResponse): Promise<void> =
     res.write(`${JSON.stringify(progress)}\n`)
   }
   try {
-    await runSlice(request, emit)
+    await runSlice(request, emit, abortOnDisconnect(res))
     res.end()
   } catch (cause) {
     if (res.headersSent) res.end()
