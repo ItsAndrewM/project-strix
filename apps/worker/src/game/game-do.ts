@@ -10,7 +10,7 @@ import { slicerFor } from "../slicer/slicer.ts"
 import { migrate } from "./db/migrate.ts"
 import { MIGRATIONS } from "./db/migrations.ts"
 import { type GameApi, gameApi } from "./http.ts"
-import { checkProbe, type IngestDeps, probeKey, setSource, start } from "./ingest.ts"
+import { type ActiveJob, checkProbe, type IngestDeps, probeKey, setSource, start } from "./ingest.ts"
 import { serveThumb, serveView } from "./media.ts"
 import { type Publish, publisherFor } from "./publish.ts"
 import { checkRanges } from "./ranges.ts"
@@ -54,7 +54,7 @@ const refusalWithoutEmail = (request: Request): Response | undefined => {
 }
 
 export class GameDO extends DurableObject<Env> {
-  readonly active = new Map<number, number>()
+  readonly active = new Map<number, ActiveJob>()
   protected readonly broadcast: Broadcast
   private readonly publish: Publish
   private readonly api: GameApi

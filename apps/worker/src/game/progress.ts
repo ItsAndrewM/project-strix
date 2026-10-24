@@ -3,8 +3,10 @@
  * up, `running` while its slice job streams, then `done` or `failed` (with the reason). `startedAt` is when it last
  * changed to queued or running and `progressAt` when its job last reported a window, so a range that goes
  * `RANGE_TIMEOUT_MS` without progress is presumed dead however long it has run in total. A range recorded as running
- * whose job is not active in this instance was orphaned by a reset or eviction, as were the queued ranges once nothing
- * is active; the alarm resumes those (see ranges.ts) instead of failing them.
+ * whose job is not active in this instance was orphaned by a reset or eviction, and a queued range is waiting for a
+ * slot; the alarm resumes both (see ranges.ts) instead of failing them. `attempts` counts the jobs a range has been
+ * given: a job that dies hands the range back to the queue until `MAX_RANGE_ATTEMPTS`, since containers are recycled
+ * by rollouts and resets and the next job carries on from the windows that already have clips.
  *
  * Every window a failed range did not slice is recorded as an unsliced clip, so a game that settles with some of its
  * video missing says how much in its `failure`, while its status still follows the clips that were sliced.
@@ -18,8 +20,11 @@ export interface RangeRecord {
   readonly status: RangeStatus
   readonly startedAt: number
   readonly progressAt?: number
+  readonly attempts?: number
   readonly reason?: string
 }
+
+export const MAX_RANGE_ATTEMPTS = 3
 
 export type Ranges = Readonly<Record<number, RangeRecord>>
 
@@ -80,14 +85,21 @@ const isRunning = (record: RangeRecord): boolean => record.status === "running"
 const stalled = (record: RangeRecord, now: number): boolean =>
   isRunning(record) && now - (record.progressAt ?? record.startedAt) > RANGE_TIMEOUT_MS
 
+export const stalledRangeIndexes = (ranges: Ranges, now: number): ReadonlyArray<number> =>
+  Object.entries(ranges).flatMap(([index, record]) => (stalled(record, now) ? [Number(index)] : []))
+
 export const timeOutRanges = (ranges: Ranges, now: number): Ranges =>
   mapRanges(
     ranges,
     failedIf((record) => stalled(record, now)),
   )
 
-export const orphanedRangeIndexes = (ranges: Ranges, active: ReadonlySet<number>): ReadonlyArray<number> =>
+export const orphanedRangeIndexes = (
+  ranges: Ranges,
+  active: ReadonlySet<number>,
+  slots: number,
+): ReadonlyArray<number> =>
   Object.entries(ranges).flatMap(([index, record]) => {
-    const orphaned = isRunning(record) ? !active.has(Number(index)) : isQueued(record) && active.size === 0
+    const orphaned = isRunning(record) ? !active.has(Number(index)) : isQueued(record) && active.size < slots
     return orphaned ? [Number(index)] : []
   })

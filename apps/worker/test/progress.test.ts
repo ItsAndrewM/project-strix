@@ -10,6 +10,7 @@ import {
   type Ranges,
   RANGE_TIMEOUT_MS,
   rangeFailureReason,
+  stalledRangeIndexes,
   statusAfterRanges,
   timeOutRanges,
 } from "../src/game/progress.ts"
@@ -120,17 +121,32 @@ describe("timeOutRanges", () => {
   })
 })
 
+describe("stalledRangeIndexes", () => {
+  it("names the running ranges that have gone 30 minutes without progress", () => {
+    const quiet = NOW - RANGE_TIMEOUT_MS - 1
+    const ranges: Ranges = {
+      0: at("running", quiet),
+      1: { ...at("running", quiet), progressAt: NOW - 1 },
+      2: at("queued", quiet),
+      3: at("running"),
+    }
+    expect(stalledRangeIndexes(ranges, NOW)).toEqual([0])
+  })
+})
+
 describe("orphanedRangeIndexes", () => {
   it("names the running ranges whose job is not active in this instance", () => {
     const ranges: Ranges = { 0: at("running"), 1: at("running"), 2: at("done"), 3: at("failed") }
-    expect(orphanedRangeIndexes(ranges, new Set([1]))).toEqual([0])
+    expect(orphanedRangeIndexes(ranges, new Set([1]), 6)).toEqual([0])
   })
 
-  it("names the queued ranges too once nothing is active", () => {
-    expect(orphanedRangeIndexes({ 0: at("running"), 1: at("queued") }, new Set())).toEqual([0, 1])
+  it("names the queued ranges too while a slot is free", () => {
+    expect(orphanedRangeIndexes({ 0: at("running"), 1: at("queued") }, new Set(), 6)).toEqual([0, 1])
+    expect(orphanedRangeIndexes({ 0: at("running"), 1: at("queued") }, new Set([0]), 6)).toEqual([1])
   })
 
-  it("leaves queued ranges to the running slot loop while anything is active", () => {
-    expect(orphanedRangeIndexes({ 0: at("running"), 1: at("queued") }, new Set([0]))).toEqual([])
+  it("leaves queued ranges waiting while every slot is taken", () => {
+    const ranges: Ranges = { 0: at("running"), 1: at("running"), 2: at("queued") }
+    expect(orphanedRangeIndexes(ranges, new Set([0, 1]), 2)).toEqual([])
   })
 })
