@@ -9,9 +9,9 @@
  * The jobs running in this instance are tracked in `deps.active`, range index to concurrency slot; a reset or eviction
  * empties it while the records still say running, so the alarm resumes those ranges (and the queued ones whenever a
  * slot is free), slicing only the windows that have no clip yet. A job that dies, as every job does when a rollout or
- * reset recycles its container, hands its range back to the queue for the alarm to resume, up to `MAX_RANGE_ATTEMPTS`
- * jobs per range; only then is the range failed, and a range that goes quiet for `RANGE_TIMEOUT_MS` is retried the
- * same way. Claiming a range numbers the job with the range's attempt count, and a job acts on its range only while
+ * reset recycles its container, hands its range back to the queue for the alarm to resume; a range that goes quiet
+ * for `RANGE_TIMEOUT_MS` is retried the same way. Only `MAX_RANGE_STRIKES` jobs in a row that end without recording a
+ * window fail the range (see progress.ts). Claiming a range numbers the job with the range's attempt count, and a job acts on its range only while
  * its number is current, so a job the alarm gave up on cannot clobber its successor; its `active` entry likewise stays
  * until that job returns or a successor replaces it, so a stalled job keeps its slot counted against the game's
  * concurrency and never frees a successor's entry. The alarm decides what to resume
@@ -28,7 +28,7 @@ import type { ActiveJob, IngestDeps } from "./ingest.ts"
 import {
   failedRangeIndexes,
   failureAfterRanges,
-  MAX_RANGE_ATTEMPTS,
+  MAX_RANGE_STRIKES,
   orphanedRangeIndexes,
   RANGE_TIMED_OUT,
   rangeFailureReason,
@@ -62,21 +62,50 @@ export const queueRanges = (storage: DurableObjectStorage, count: number, now: n
   )
 }
 
-const markRange = (storage: DurableObjectStorage, index: number, status: RangeStatus, reason?: string): void => {
+const withStrikes = (record: RangeRecord, strikes: number): RangeRecord =>
+  strikes > 0 ? { ...record, strikes } : record
+
+const baseRecord = (status: RangeStatus, startedAt: number, attempts: number | undefined): RangeRecord =>
+  attempts === undefined ? { status, startedAt } : { status, startedAt, attempts }
+
+const markDone = (storage: DurableObjectStorage, index: number): void => {
   const ranges = readRanges(storage)
   const previous = ranges[index]
-  const restarted = status === "running" || status === "queued"
-  const startedAt = restarted ? Date.now() : (previous?.startedAt ?? Date.now())
-  const attempts = previous?.attempts
-  const record: RangeRecord = attempts === undefined ? { status, startedAt } : { status, startedAt, attempts }
-  writeRanges(storage, { ...ranges, [index]: reason === undefined ? record : { ...record, reason } })
+  writeRanges(storage, {
+    ...ranges,
+    [index]: baseRecord("done", previous?.startedAt ?? Date.now(), previous?.attempts),
+  })
 }
 
 const claimRange = (storage: DurableObjectStorage, index: number): number => {
   const ranges = readRanges(storage)
-  const attempts = (ranges[index]?.attempts ?? 0) + 1
-  writeRanges(storage, { ...ranges, [index]: { status: "running", startedAt: Date.now(), attempts } })
+  const previous = ranges[index]
+  const attempts = (previous?.attempts ?? 0) + 1
+  const record = withStrikes({ status: "running", startedAt: Date.now(), attempts }, previous?.strikes ?? 0)
+  writeRanges(storage, { ...ranges, [index]: record })
   return attempts
+}
+
+const strikesAfter = (record: RangeRecord | undefined): number => {
+  const strikes = record?.strikes ?? 0
+  if (record?.status !== "running") return strikes
+  return record.progressAt === undefined ? strikes + 1 : 0
+}
+
+const failRange = (storage: DurableObjectStorage, index: number, reason: string, strikes: number): void => {
+  const ranges = readRanges(storage)
+  const previous = ranges[index]
+  const record = withStrikes(baseRecord("failed", previous?.startedAt ?? Date.now(), previous?.attempts), strikes)
+  writeRanges(storage, { ...ranges, [index]: { ...record, reason } })
+}
+
+const requeueRange = (storage: DurableObjectStorage, index: number): number => {
+  const ranges = readRanges(storage)
+  const previous = ranges[index]
+  const strikes = strikesAfter(previous)
+  const record = withStrikes(baseRecord("queued", Date.now(), previous?.attempts), strikes)
+  writeRanges(storage, { ...ranges, [index]: record })
+  return strikes
 }
 
 const owns = (storage: DurableObjectStorage, index: number, attempt: number): boolean => {
@@ -161,16 +190,17 @@ const sliceRange = async (deps: IngestDeps, { index, attempt, slot }: Claim, ran
       const slicer = await deps.slicer(slot)
       await slicer.slice(await sliceRequestFor(deps, range), progressFor(deps, index, attempt, range))
     }
-    if (owns(storage, index, attempt)) markRange(storage, index, "done")
+    if (owns(storage, index, attempt)) markDone(storage, index)
   } catch (cause) {
     if (!owns(storage, index, attempt)) return
-    if (attempt < MAX_RANGE_ATTEMPTS) {
-      logRangeRetry(deps.gameId, index, attempt, cause)
-      markRange(storage, index, "queued")
+    const strikes = strikesAfter(readRanges(storage)[index])
+    if (strikes < MAX_RANGE_STRIKES) {
+      logRangeRetry(deps.gameId, index, strikes, cause)
+      requeueRange(storage, index)
       return
     }
     logRangeFailure(deps.gameId, index, cause)
-    markRange(storage, index, "failed", rangeFailureReason(cause))
+    failRange(storage, index, rangeFailureReason(cause), strikes)
     await recordUnsliced(deps, range.windows)
   }
 }
@@ -228,7 +258,7 @@ const windowsOfFailedRanges = (ranges: Ranges, durationMs: number): ReadonlyArra
 }
 
 const resumeJob = (deps: IngestDeps, index: number, range: Range, sliced: ReadonlySet<number>): Job => {
-  markRange(deps.ctx.storage, index, "queued")
+  requeueRange(deps.ctx.storage, index)
   const windows = range.windows.filter((window) => !sliced.has(window.index))
   logRangeResumed(deps.gameId, index, windows.length)
   return [index, { ...range, windows }]
@@ -249,10 +279,10 @@ const resume = (deps: IngestDeps, durationMs: number): void => {
 const retryStalled = (deps: IngestDeps, now: number): void => {
   const { storage } = deps.ctx
   for (const index of stalledRangeIndexes(readRanges(storage), now)) {
-    const attempt = readRanges(storage)[index]?.attempts ?? 1
-    if (attempt >= MAX_RANGE_ATTEMPTS) continue
-    logRangeRetry(deps.gameId, index, attempt, RANGE_TIMED_OUT)
-    markRange(storage, index, "queued")
+    const strikes = strikesAfter(readRanges(storage)[index])
+    if (strikes >= MAX_RANGE_STRIKES) continue
+    logRangeRetry(deps.gameId, index, strikes, RANGE_TIMED_OUT)
+    requeueRange(storage, index)
   }
 }
 

@@ -4,9 +4,11 @@
  * changed to queued or running and `progressAt` when its job last reported a window, so a range that goes
  * `RANGE_TIMEOUT_MS` without progress is presumed dead however long it has run in total. A range recorded as running
  * whose job is not active in this instance was orphaned by a reset or eviction, and a queued range is waiting for a
- * slot; the alarm resumes both (see ranges.ts) instead of failing them. `attempts` counts the jobs a range has been
- * given: a job that dies hands the range back to the queue until `MAX_RANGE_ATTEMPTS`, since containers are recycled
- * by rollouts and resets and the next job carries on from the windows that already have clips.
+ * slot; the alarm resumes both (see ranges.ts) instead of failing them. `attempts` numbers the jobs a range has been
+ * given, so a stale job can tell it has been replaced. `strikes` counts the jobs in a row that ended without
+ * recording a window: a job that dies, stalls or is orphaned hands the range back to the queue, and only
+ * `MAX_RANGE_STRIKES` of those in a row fail it. Containers and Durable Objects are recycled by rollouts and resets
+ * several times an hour, so a range that keeps making progress is never failed for being interrupted.
  *
  * Every window a failed range did not slice is recorded as an unsliced clip, so a game that settles with some of its
  * video missing says how much in its `failure`, while its status still follows the clips that were sliced.
@@ -21,10 +23,11 @@ export interface RangeRecord {
   readonly startedAt: number
   readonly progressAt?: number
   readonly attempts?: number
+  readonly strikes?: number
   readonly reason?: string
 }
 
-export const MAX_RANGE_ATTEMPTS = 3
+export const MAX_RANGE_STRIKES = 3
 
 export type Ranges = Readonly<Record<number, RangeRecord>>
 
