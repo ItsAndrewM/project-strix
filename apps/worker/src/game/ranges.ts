@@ -30,6 +30,7 @@ import {
   failureAfterRanges,
   MAX_RANGE_STRIKES,
   orphanedRangeIndexes,
+  RANGE_LOST,
   RANGE_TIMED_OUT,
   rangeFailureReason,
   type RangeRecord,
@@ -99,13 +100,10 @@ const failRange = (storage: DurableObjectStorage, index: number, reason: string,
   writeRanges(storage, { ...ranges, [index]: { ...record, reason } })
 }
 
-const requeueRange = (storage: DurableObjectStorage, index: number): number => {
+const requeueRange = (storage: DurableObjectStorage, index: number, strikes: number): void => {
   const ranges = readRanges(storage)
-  const previous = ranges[index]
-  const strikes = strikesAfter(previous)
-  const record = withStrikes(baseRecord("queued", Date.now(), previous?.attempts), strikes)
+  const record = withStrikes(baseRecord("queued", Date.now(), ranges[index]?.attempts), strikes)
   writeRanges(storage, { ...ranges, [index]: record })
-  return strikes
 }
 
 const owns = (storage: DurableObjectStorage, index: number, attempt: number): boolean => {
@@ -168,13 +166,13 @@ const progressFor =
   (deps: IngestDeps, index: number, attempt: number, range: Range) =>
   async (progress: SliceProgress): Promise<void> => {
     if (!owns(deps.ctx.storage, index, attempt)) return
-    touchRange(deps.ctx.storage, index)
     if (progress.kind === "clip") {
       await deps.clipReady(clipOf(windowOf(range, progress.index)))
     } else if (progress.kind === "failed") {
       logWindowFailure(deps.gameId, progress.index, progress.reason)
       await recordUnsliced(deps, [windowOf(range, progress.index)])
     }
+    if (progress.kind !== "done" && owns(deps.ctx.storage, index, attempt)) touchRange(deps.ctx.storage, index)
   }
 
 interface Claim {
@@ -196,7 +194,7 @@ const sliceRange = async (deps: IngestDeps, { index, attempt, slot }: Claim, ran
     const strikes = strikesAfter(readRanges(storage)[index])
     if (strikes < MAX_RANGE_STRIKES) {
       logRangeRetry(deps.gameId, index, strikes, cause)
-      requeueRange(storage, index)
+      requeueRange(storage, index, strikes)
       return
     }
     logRangeFailure(deps.gameId, index, cause)
@@ -257,32 +255,43 @@ const windowsOfFailedRanges = (ranges: Ranges, durationMs: number): ReadonlyArra
   return failedRangeIndexes(ranges).flatMap((index) => all[index]?.windows ?? [])
 }
 
-const resumeJob = (deps: IngestDeps, index: number, range: Range, sliced: ReadonlySet<number>): Job => {
-  requeueRange(deps.ctx.storage, index)
+const resumeJob = (deps: IngestDeps, index: number, range: Range, sliced: ReadonlySet<number>): Job | null => {
+  const { storage } = deps.ctx
+  const strikes = strikesAfter(readRanges(storage)[index])
+  if (strikes >= MAX_RANGE_STRIKES) {
+    logRangeFailure(deps.gameId, index, RANGE_LOST)
+    failRange(storage, index, RANGE_LOST, strikes)
+    return null
+  }
+  requeueRange(storage, index, strikes)
   const windows = range.windows.filter((window) => !sliced.has(window.index))
   logRangeResumed(deps.gameId, index, windows.length)
   return [index, { ...range, windows }]
 }
 
-const resume = (deps: IngestDeps, durationMs: number): void => {
+const resume = (deps: IngestDeps, durationMs: number): ReadonlyArray<Window> => {
   const { storage } = deps.ctx
   const indexes = orphanedRangeIndexes(readRanges(storage), new Set(deps.active.keys()), CONCURRENT_RANGES)
   const all = rangesFor(durationMs)
   const sliced = slicedIndexes(storage.sql)
+  const lost: Window[] = []
   const jobs = indexes.flatMap((index) => {
     const range = all[index]
-    return range === undefined ? [] : [resumeJob(deps, index, range, sliced)]
+    const job = range === undefined ? null : resumeJob(deps, index, range, sliced)
+    if (job === null) lost.push(...(range?.windows ?? []))
+    return job === null ? [] : [job]
   })
   if (jobs.length > 0) deps.ctx.waitUntil(runJobs(deps, jobs))
+  return lost
 }
 
 const retryStalled = (deps: IngestDeps, now: number): void => {
   const { storage } = deps.ctx
   for (const index of stalledRangeIndexes(readRanges(storage), now)) {
-    const strikes = strikesAfter(readRanges(storage)[index])
+    const strikes = (readRanges(storage)[index]?.strikes ?? 0) + 1
     if (strikes >= MAX_RANGE_STRIKES) continue
     logRangeRetry(deps.gameId, index, strikes, RANGE_TIMED_OUT)
-    requeueRange(storage, index)
+    requeueRange(storage, index, strikes)
   }
 }
 
@@ -294,7 +303,7 @@ export const checkRanges = async (deps: IngestDeps): Promise<void> => {
   const ranges = timeOutRanges(readRanges(storage), Date.now())
   writeRanges(storage, ranges)
   await recordUnsliced(deps, windowsOfFailedRanges(ranges, game.durationMs ?? 0))
-  resume(deps, game.durationMs ?? 0)
+  await recordUnsliced(deps, resume(deps, game.durationMs ?? 0))
   await settle(deps)
   if (readGame(storage.sql)?.status === "slicing") await storage.setAlarm(Date.now() + SLICING_CHECK_MS)
 }

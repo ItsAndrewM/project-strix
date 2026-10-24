@@ -38,6 +38,7 @@ export interface SliceCounts {
 
 export const RANGE_TIMEOUT_MS = 30 * 60_000
 export const RANGE_TIMED_OUT = "timed out"
+export const RANGE_LOST = "lost its slicer three times without recording a window"
 export const NO_CAPACITY = "no slicer capacity"
 export const NO_CLIPS = "Slicing failed: no clips were recorded"
 
